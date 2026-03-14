@@ -132,6 +132,7 @@
   boot();
 
   function boot() {
+    resetScanState();
     document.querySelectorAll("#" + PANEL_ID + ", .cgpt-tree-hover-tooltip, .cgpt-tree-drag-ghost").forEach((node) => {
       if (node?.remove) {
         node.remove();
@@ -162,6 +163,7 @@
     state.saveTimer = null;
     state.activeTimer = null;
     state.urlTimer = null;
+    resetScanState();
 
     if (state.observer) {
       state.observer.disconnect();
@@ -670,6 +672,7 @@
   }
 
   function handleConversationChange() {
+    resetScanState();
     state.siteType = detectSiteType();
     state.chatKey = getChatKey();
     state.tree = loadTree();
@@ -693,6 +696,15 @@
     applyPanelState();
     renderTree();
     scheduleScan(400);
+  }
+
+  function resetScanState() {
+    state.scanInFlight = false;
+    state.deferredScanDelay = null;
+    state.deferredScanRequest = null;
+    state.aiAnalysisInFlight = false;
+    state.scanRequestId += 1;
+    updateBusyControls();
   }
 
   function scheduleScan(delay) {
