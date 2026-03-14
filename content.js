@@ -6,6 +6,7 @@
   const CURRENT_ATTR = "data-cgpt-tree-current";
   const STORAGE_PREFIX = "cgpt_tree_state_v2:";
   const ROOT_PARENT_SIGNATURE = "__cgpt_tree_root__";
+  const API_STATUS_KEYS = ["apiKey", "apiAvailable"];
   const MAX_NODES = 180;
   const SCAN_DEBOUNCE_MS = 500;
   const SCAN_DEBOUNCE_MS_LARGE_TREE = 1200;
@@ -77,6 +78,7 @@
     toggleButton: null,
     undoButton: null,
     refreshButton: null,
+    aiStatusBadge: null,
     observer: null,
     urlTimer: null,
     scanTimer: null,
@@ -359,7 +361,7 @@
         '<div class="cgpt-tree-header">',
         '  <div class="cgpt-tree-header-top">',
         '    <div class="cgpt-tree-title">',
-        '      <strong>对话树</strong>',
+        '      <div class="cgpt-tree-title-line"><strong>对话树</strong><span class="cgpt-tree-ai-badge is-unknown">AI状态未知</span></div>',
         "    </div>",
         '    <button type="button" class="cgpt-tree-toggle-button" data-role="toggle">折叠</button>',
         "  </div>",
@@ -419,6 +421,7 @@
     state.toggleButton = panel.querySelector('[data-role="toggle"]');
     state.undoButton = panel.querySelector('[data-role="undo"]');
     state.refreshButton = panel.querySelector('[data-role="refresh"]');
+    state.aiStatusBadge = panel.querySelector(".cgpt-tree-ai-badge");
     panel.querySelector('[data-role="export-format"]').value = state.exportFormat;
 
     bindPanelEvents();
@@ -427,6 +430,7 @@
     applyPanelState();
     updateExportModeOptions();
     updateUndoButtonState();
+    void refreshAIAvailabilityIndicator();
     renderTree();
   }
 
@@ -535,6 +539,20 @@
     addCleanup(() => window.removeEventListener("pointerup", handleDragEnd));
     window.addEventListener("pointercancel", handleDragEnd);
     addCleanup(() => window.removeEventListener("pointercancel", handleDragEnd));
+
+    if (chrome?.storage?.onChanged) {
+      const handleStorageChange = (changes, areaName) => {
+        if (areaName !== "local") {
+          return;
+        }
+        if (!changes.apiKey && !changes.apiAvailable) {
+          return;
+        }
+        void refreshAIAvailabilityIndicator();
+      };
+      chrome.storage.onChanged.addListener(handleStorageChange);
+      addCleanup(() => chrome.storage.onChanged.removeListener(handleStorageChange));
+    }
   }
 
   function applyPanelState() {
@@ -592,6 +610,37 @@
     if (state.refreshButton) {
       state.refreshButton.disabled = state.aiAnalysisInFlight;
       state.refreshButton.textContent = state.aiAnalysisInFlight ? "AI排序中..." : "重新排序";
+    }
+  }
+
+  async function refreshAIAvailabilityIndicator() {
+    if (!state.aiStatusBadge) {
+      return;
+    }
+    try {
+      const stored = await chrome.storage.local.get(API_STATUS_KEYS);
+      const apiKey = typeof stored.apiKey === "string" ? stored.apiKey.trim() : "";
+      const apiAvailable = Boolean(stored.apiAvailable);
+      let statusClass = "is-unknown";
+      let statusText = "AI状态未知";
+
+      if (!apiKey) {
+        statusClass = "is-missing";
+        statusText = "AI未配置";
+      } else if (apiAvailable) {
+        statusClass = "is-ready";
+        statusText = "AI可用";
+      } else {
+        statusClass = "is-unavailable";
+        statusText = "AI不可用";
+      }
+
+      state.aiStatusBadge.className = "cgpt-tree-ai-badge " + statusClass;
+      state.aiStatusBadge.textContent = statusText;
+    } catch (error) {
+      console.warn("ChatGPT Tree Panel: failed to read AI availability", error);
+      state.aiStatusBadge.className = "cgpt-tree-ai-badge is-unknown";
+      state.aiStatusBadge.textContent = "AI状态未知";
     }
   }
 
