@@ -800,10 +800,14 @@
       return;
     }
     captureUndoState();
+    state.tree.ignoredPromptIndices = [];
+    state.tree.ignoredSignatures = [];
+    state.tree.ignoredTitles = [];
     state.lastAIFingerprint = "";
     state.lastAIRelationships = [];
     state.lastAITreeSnapshot = null;
     state.lastAIEntrySignatures = [];
+    saveTree();
     await scanConversation(true, true, shouldRequireAI);
   }
 
