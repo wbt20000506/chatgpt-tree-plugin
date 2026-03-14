@@ -2611,10 +2611,14 @@
     }
     state.searchIndex = (state.searchIndex + step + state.searchResults.length) % state.searchResults.length;
     const nodeId = state.searchResults[state.searchIndex];
-    revealAncestors(nodeId);
+    const layoutChanged = revealAncestors(nodeId);
     updateResultBadge();
-    state.renderVersion += 1;
-    renderTree();
+    if (layoutChanged) {
+      state.renderVersion += 1;
+      renderTree();
+    } else {
+      updateRenderedActiveNodeClasses(state.activeNodeId, nodeId);
+    }
     jumpToNode(nodeId);
   }
 
@@ -2635,15 +2639,20 @@
   }
 
   function revealAncestors(nodeId) {
+    let changed = false;
     let cursor = state.tree.nodes[nodeId];
     while (cursor && cursor.parentId) {
       const parent = state.tree.nodes[cursor.parentId];
       if (!parent) {
         break;
       }
-      parent.collapsed = false;
+      if (parent.collapsed) {
+        parent.collapsed = false;
+        changed = true;
+      }
       cursor = parent.id === "root" ? null : parent;
     }
+    return changed;
   }
 
   function renderTree() {
@@ -2701,6 +2710,7 @@
     state.body.appendChild(svg);
     state.body.scrollLeft = previousScrollLeft;
     state.body.scrollTop = previousScrollTop;
+    syncRenderedActiveNodeClasses();
     window.requestAnimationFrame(() => {
       scrollTreeNodeIntoView(state.activeNodeId);
     });
@@ -4081,10 +4091,16 @@
       nodeId,
       activeNodeId: state.activeNodeId
     });
+    const previousActiveNodeId = state.activeNodeId;
     state.activeNodeId = nodeId;
-    revealAncestors(nodeId);
+    const layoutChanged = revealAncestors(nodeId);
     applyActiveHighlight();
-    renderTree();
+    if (layoutChanged) {
+      state.renderVersion += 1;
+      renderTree();
+    } else {
+      updateRenderedActiveNodeClasses(previousActiveNodeId, nodeId);
+    }
     const target = resolveNodeTargetElement(nodeId);
     if (!target) {
       debugLog("jump-no-target", {
@@ -4336,17 +4352,45 @@
     }
 
     if (best && best.nodeId !== state.activeNodeId) {
+      const previousActiveNodeId = state.activeNodeId;
       state.activeNodeId = best.nodeId;
       applyActiveHighlight();
-      state.renderedFingerprint = "";
-      requestTreeVisualRefresh();
+      updateRenderedActiveNodeClasses(previousActiveNodeId, best.nodeId);
     }
   }
 
-  function requestTreeVisualRefresh() {
-    window.requestAnimationFrame(() => {
-      renderTree();
+  function syncRenderedActiveNodeClasses() {
+    if (!state.body) {
+      return;
+    }
+    state.body.querySelectorAll("g[data-id].active").forEach((element) => {
+      element.classList.remove("active");
     });
+    if (!state.activeNodeId) {
+      return;
+    }
+    const activeGroup = state.body.querySelector('g[data-id="' + state.activeNodeId + '"]');
+    if (activeGroup) {
+      activeGroup.classList.add("active");
+    }
+  }
+
+  function updateRenderedActiveNodeClasses(previousNodeId, nextNodeId) {
+    if (!state.body || previousNodeId === nextNodeId) {
+      return;
+    }
+    if (previousNodeId) {
+      const previousGroup = state.body.querySelector('g[data-id="' + previousNodeId + '"]');
+      if (previousGroup) {
+        previousGroup.classList.remove("active");
+      }
+    }
+    if (nextNodeId) {
+      const nextGroup = state.body.querySelector('g[data-id="' + nextNodeId + '"]');
+      if (nextGroup) {
+        nextGroup.classList.add("active");
+      }
+    }
   }
 
   function getLatestNodeId() {
