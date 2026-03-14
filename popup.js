@@ -13,7 +13,7 @@ const API_META = Object.freeze({
   openai: {
     keyLabel: "OpenAI API Key",
     keyPlaceholder: "请输入 OpenAI API Key",
-    hint: "默认按 gpt-4o -> gpt-4 -> gpt-3.5-turbo 顺序尝试。"
+    hint: "推荐模型：gpt-5.2 或 gpt-5-mini，也兼容 gpt-4.1 系列。"
   },
   gemini: {
     keyLabel: "Gemini API Key",
@@ -23,12 +23,12 @@ const API_META = Object.freeze({
   claude: {
     keyLabel: "Claude API Key",
     keyPlaceholder: "请输入 Claude API Key",
-    hint: "使用 Anthropic Messages API 进行语义分析。"
+    hint: "推荐模型：claude-sonnet-4-20250514，也兼容 claude-3-7-sonnet-20250219。"
   },
   deepseek: {
     keyLabel: "DeepSeek API Key",
     keyPlaceholder: "请输入 DeepSeek API Key",
-    hint: "使用 DeepSeek Chat 接口进行语义分析。"
+    hint: "推荐模型：deepseek-chat；如需推理模式可填写 deepseek-reasoner。"
   },
   mimo: {
     keyLabel: "MiMo API Key",

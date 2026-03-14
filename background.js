@@ -25,12 +25,12 @@ const DEFAULT_ENDPOINTS = Object.freeze({
 });
 
 const MODEL_CANDIDATES = Object.freeze({
-  [API_TYPES.OPENAI]: ["gpt-4o", "gpt-4", "gpt-3.5-turbo"],
+  [API_TYPES.OPENAI]: ["gpt-5.2", "gpt-5.1", "gpt-5-mini", "gpt-4.1-mini"],
   [API_TYPES.GEMINI]: ["gemini-2.5-flash", "gemini-2.0-flash", "gemini-1.5-flash"],
-  [API_TYPES.CLAUDE]: ["claude-3-5-sonnet-latest"],
-  [API_TYPES.DEEPSEEK]: ["deepseek-chat"],
+  [API_TYPES.CLAUDE]: ["claude-sonnet-4-20250514", "claude-3-7-sonnet-20250219", "claude-3-5-haiku-20241022"],
+  [API_TYPES.DEEPSEEK]: ["deepseek-chat", "deepseek-reasoner"],
   [API_TYPES.MIMO]: ["mimo-v2-flash", "mimo-v2-pro"],
-  [API_TYPES.CUSTOM]: ["gpt-4o", "gpt-4", "gpt-3.5-turbo", "deepseek-chat"]
+  [API_TYPES.CUSTOM]: ["gpt-4.1", "gpt-4.1-mini", "gpt-4o-mini", "deepseek-chat"]
 });
 
 chrome.runtime.onInstalled.addListener(() => {
@@ -189,12 +189,12 @@ function resolveApiKey(stored) {
 }
 
 const FAST_MODELS = Object.freeze({
-  [API_TYPES.OPENAI]: ["gpt-4o-mini", "gpt-3.5-turbo"],
+  [API_TYPES.OPENAI]: ["gpt-5-mini", "gpt-4.1-mini"],
   [API_TYPES.GEMINI]: ["gemini-2.5-flash", "gemini-2.0-flash"],
-  [API_TYPES.CLAUDE]: ["claude-3-5-haiku-latest"],
+  [API_TYPES.CLAUDE]: ["claude-3-5-haiku-20241022"],
   [API_TYPES.DEEPSEEK]: ["deepseek-chat"],
   [API_TYPES.MIMO]: ["mimo-v2-flash"],
-  [API_TYPES.CUSTOM]: ["gpt-4o-mini", "gpt-3.5-turbo"]
+  [API_TYPES.CUSTOM]: ["gpt-5-mini", "gpt-4.1-mini"]
 });
 
 async function callProviderWithFallbackModels(config, prompt) {
@@ -302,9 +302,10 @@ async function callProvider(config, prompt, model) {
 function buildProviderRequest(config, prompt, model) {
   switch (config.apiType) {
     case API_TYPES.OPENAI:
-    case API_TYPES.DEEPSEEK:
     case API_TYPES.CUSTOM:
       return buildOpenAICompatibleRequest(config, prompt, model);
+    case API_TYPES.DEEPSEEK:
+      return buildDeepSeekRequest(config, prompt, model);
     case API_TYPES.GEMINI:
       return buildGeminiRequest(config, prompt, model);
     case API_TYPES.CLAUDE:
@@ -317,6 +318,35 @@ function buildProviderRequest(config, prompt, model) {
 }
 
 function buildOpenAICompatibleRequest(config, prompt, model) {
+  const resolvedModel = String(model || config.selectedModel || "gpt-5-mini").trim() || "gpt-5-mini";
+  const body = {
+    model: resolvedModel,
+    messages: [
+      {
+        role: "system",
+        content: "你是对话树结构分析器，只输出 JSON。"
+      },
+      {
+        role: "user",
+        content: prompt
+      }
+    ],
+    response_format: {
+      type: "json_object"
+    }
+  };
+
+  // OpenAI's newer reasoning-capable chat models prefer max_completion_tokens.
+  if (config.apiType === API_TYPES.OPENAI && prefersMaxCompletionTokens(resolvedModel)) {
+    body.max_completion_tokens = 1024;
+  } else {
+    body.max_tokens = 1024;
+  }
+
+  if (!isStrictReasoningModel(resolvedModel)) {
+    body.temperature = 0.1;
+  }
+
   return {
     url: config.endpoint,
     options: {
@@ -325,21 +355,45 @@ function buildOpenAICompatibleRequest(config, prompt, model) {
         "Content-Type": "application/json",
         Authorization: "Bearer " + config.apiKey
       },
-      body: JSON.stringify({
-        model,
-        temperature: 0.1,
-        max_tokens: 1024,
-        messages: [
-          {
-            role: "system",
-            content: "你是对话树结构分析器，只输出 JSON。"
-          },
-          {
-            role: "user",
-            content: prompt
-          }
-        ]
-      })
+      body: JSON.stringify(body)
+    }
+  };
+}
+
+function buildDeepSeekRequest(config, prompt, model) {
+  const resolvedModel = String(model || config.selectedModel || "deepseek-chat").trim() || "deepseek-chat";
+  const body = {
+    model: resolvedModel,
+    max_tokens: resolvedModel === "deepseek-reasoner" ? 2048 : 1024,
+    response_format: {
+      type: "json_object"
+    },
+    messages: [
+      {
+        role: "system",
+        content: "你是对话树结构分析器，只输出 JSON。"
+      },
+      {
+        role: "user",
+        content: prompt
+      }
+    ]
+  };
+
+  // DeepSeek's reasoning model does not support temperature/top_p style controls.
+  if (resolvedModel !== "deepseek-reasoner") {
+    body.temperature = 0.1;
+  }
+
+  return {
+    url: config.endpoint,
+    options: {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: "Bearer " + config.apiKey
+      },
+      body: JSON.stringify(body)
     }
   };
 }
@@ -382,6 +436,7 @@ function buildGeminiRequest(config, prompt, model) {
 }
 
 function buildClaudeRequest(config, prompt, model) {
+  const resolvedModel = String(model || config.selectedModel || "claude-sonnet-4-20250514").trim() || "claude-sonnet-4-20250514";
   return {
     url: config.endpoint,
     options: {
@@ -392,7 +447,7 @@ function buildClaudeRequest(config, prompt, model) {
         "anthropic-version": "2023-06-01"
       },
       body: JSON.stringify({
-        model,
+        model: resolvedModel,
         max_tokens: 1024,
         temperature: 0.1,
         system: "你是对话树结构分析器，只输出 JSON。",
@@ -409,6 +464,7 @@ function buildClaudeRequest(config, prompt, model) {
 
 function buildMiMoRequest(config, prompt, model) {
   // MiMo API 使用 api-key header（不是 x-api-key），格式类似 Claude
+  const resolvedModel = String(model || config.selectedModel || "mimo-v2-flash").trim() || "mimo-v2-flash";
   return {
     url: config.endpoint,
     options: {
@@ -418,7 +474,7 @@ function buildMiMoRequest(config, prompt, model) {
         "api-key": config.apiKey
       },
       body: JSON.stringify({
-        model: model || "mimo-v2-flash",
+        model: resolvedModel,
         max_tokens: 1024,
         temperature: 0.3,
         top_p: 0.95,
@@ -438,6 +494,14 @@ function buildMiMoRequest(config, prompt, model) {
       })
     }
   };
+}
+
+function prefersMaxCompletionTokens(model) {
+  return /^gpt-5(\b|[-.])/.test(model) || /^o[134]\b/.test(model);
+}
+
+function isStrictReasoningModel(model) {
+  return model === "deepseek-reasoner" || model === "gpt-5-pro";
 }
 
 function extractProviderText(apiType, data) {
