@@ -6,7 +6,6 @@
   const CURRENT_ATTR = "data-cgpt-tree-current";
   const STORAGE_PREFIX = "cgpt_tree_state_v2:";
   const ROOT_PARENT_SIGNATURE = "__cgpt_tree_root__";
-  const API_STATUS_KEYS = ["apiKey", "apiAvailable"];
   const MAX_NODES = 180;
   const SCAN_DEBOUNCE_MS = 500;
   const SCAN_DEBOUNCE_MS_LARGE_TREE = 1200;
@@ -78,8 +77,6 @@
     toggleButton: null,
     undoButton: null,
     refreshButton: null,
-    aiStatusBadge: null,
-    hardAlgorithmButton: null,
     observer: null,
     urlTimer: null,
     scanTimer: null,
@@ -103,7 +100,6 @@
     lastKnownUrl: location.href,
     exportFormat: "markdown",
     exportMarkdownMode: "with-answers",
-    forceHardAlgorithm: false,
     undoSnapshot: null,
     drag: {
       sourceId: null,
@@ -363,7 +359,7 @@
         '<div class="cgpt-tree-header">',
         '  <div class="cgpt-tree-header-top">',
         '    <div class="cgpt-tree-title">',
-        '      <div class="cgpt-tree-title-line"><strong>对话树</strong><span class="cgpt-tree-ai-badge is-unknown">AI状态未知</span><button type="button" class="cgpt-tree-hard-button" data-role="force-hard" title="强制使用硬算法，并打断当前 AI 排序">硬算法</button></div>',
+        '      <div class="cgpt-tree-title-line"><strong>对话树</strong></div>',
         "    </div>",
         '    <button type="button" class="cgpt-tree-toggle-button" data-role="toggle">折叠</button>',
         "  </div>",
@@ -423,8 +419,6 @@
     state.toggleButton = panel.querySelector('[data-role="toggle"]');
     state.undoButton = panel.querySelector('[data-role="undo"]');
     state.refreshButton = panel.querySelector('[data-role="refresh"]');
-    state.aiStatusBadge = panel.querySelector(".cgpt-tree-ai-badge");
-    state.hardAlgorithmButton = panel.querySelector('[data-role="force-hard"]');
     panel.querySelector('[data-role="export-format"]').value = state.exportFormat;
 
     bindPanelEvents();
@@ -433,7 +427,6 @@
     applyPanelState();
     updateExportModeOptions();
     updateUndoButtonState();
-    void refreshAIAvailabilityIndicator();
     renderTree();
   }
 
@@ -458,10 +451,6 @@
 
     bindClick("refresh", () => {
       refreshConversationAnalysis();
-    });
-
-    bindClick("force-hard", () => {
-      void toggleForcedHardAlgorithm();
     });
 
     bindClick("undo", () => {
@@ -547,19 +536,6 @@
     window.addEventListener("pointercancel", handleDragEnd);
     addCleanup(() => window.removeEventListener("pointercancel", handleDragEnd));
 
-    if (chrome?.storage?.onChanged) {
-      const handleStorageChange = (changes, areaName) => {
-        if (areaName !== "local") {
-          return;
-        }
-        if (!changes.apiKey && !changes.apiAvailable) {
-          return;
-        }
-        void refreshAIAvailabilityIndicator();
-      };
-      chrome.storage.onChanged.addListener(handleStorageChange);
-      addCleanup(() => chrome.storage.onChanged.removeListener(handleStorageChange));
-    }
   }
 
   function applyPanelState() {
@@ -615,49 +591,8 @@
 
   function updateBusyControls() {
     if (state.refreshButton) {
-      state.refreshButton.disabled = state.aiAnalysisInFlight;
-      state.refreshButton.textContent = state.aiAnalysisInFlight ? "AI排序中..." : "重新排序";
-    }
-    if (state.hardAlgorithmButton) {
-      state.hardAlgorithmButton.classList.toggle("is-active", state.forceHardAlgorithm);
-      state.hardAlgorithmButton.textContent = state.forceHardAlgorithm ? "硬算法中" : "硬算法";
-      state.hardAlgorithmButton.setAttribute(
-        "title",
-        state.forceHardAlgorithm
-          ? "当前已强制使用硬算法，再点一次恢复 AI 排序"
-          : "强制使用硬算法，并打断当前 AI 排序"
-      );
-    }
-  }
-
-  async function refreshAIAvailabilityIndicator() {
-    if (!state.aiStatusBadge) {
-      return;
-    }
-    try {
-      const stored = await chrome.storage.local.get(API_STATUS_KEYS);
-      const apiKey = typeof stored.apiKey === "string" ? stored.apiKey.trim() : "";
-      const apiAvailable = Boolean(stored.apiAvailable);
-      let statusClass = "is-unknown";
-      let statusText = "AI状态未知";
-
-      if (!apiKey) {
-        statusClass = "is-missing";
-        statusText = "AI未配置";
-      } else if (apiAvailable) {
-        statusClass = "is-ready";
-        statusText = "AI可用";
-      } else {
-        statusClass = "is-unavailable";
-        statusText = "AI不可用";
-      }
-
-      state.aiStatusBadge.className = "cgpt-tree-ai-badge " + statusClass;
-      state.aiStatusBadge.textContent = statusText;
-    } catch (error) {
-      console.warn("ChatGPT Tree Panel: failed to read AI availability", error);
-      state.aiStatusBadge.className = "cgpt-tree-ai-badge is-unknown";
-      state.aiStatusBadge.textContent = "AI状态未知";
+      state.refreshButton.disabled = false;
+      state.refreshButton.textContent = "重新排序";
     }
   }
 
@@ -781,24 +716,6 @@
     updateBusyControls();
   }
 
-  async function toggleForcedHardAlgorithm() {
-    state.forceHardAlgorithm = !state.forceHardAlgorithm;
-    updateBusyControls();
-
-    if (state.forceHardAlgorithm) {
-      resetScanState();
-      state.lastAIFingerprint = "";
-      state.lastAIRelationships = [];
-      state.lastAITreeSnapshot = null;
-      state.lastAIEntrySignatures = [];
-      await scanConversation(true, true, false);
-      return;
-    }
-
-    const shouldRequireAI = await hasConfiguredApiKey();
-    await scanConversation(true, true, shouldRequireAI);
-  }
-
   function scheduleScan(delay) {
     window.clearTimeout(state.scanTimer);
     if (state.aiAnalysisInFlight) {
@@ -879,10 +796,6 @@
   }
 
   async function runRefreshConversationAnalysis() {
-    const shouldRequireAI = state.forceHardAlgorithm ? false : await hasConfiguredApiKey();
-    if (state.aiAnalysisInFlight) {
-      return;
-    }
     captureUndoState();
     state.tree.ignoredPromptIndices = [];
     state.tree.ignoredSignatures = [];
@@ -892,7 +805,7 @@
     state.lastAITreeSnapshot = null;
     state.lastAIEntrySignatures = [];
     saveTree();
-    await scanConversation(true, true, shouldRequireAI);
+    await scanConversation(true, true);
   }
 
   async function scanConversation(forceRender, forceRefresh, requireAI) {
@@ -907,9 +820,6 @@
     state.scanInFlight = true;
     const scanRequestId = ++state.scanRequestId;
     try {
-      const shouldUseAI = state.forceHardAlgorithm
-        ? false
-        : (typeof requireAI === "boolean" ? requireAI : await hasConfiguredApiKey());
       const entries = filterIgnoredEntries(extractPromptEntries());
       const fingerprint = JSON.stringify(entries.map((entry) => [entry.analysisId, entry.signature, entry.answerSignature]));
       if (!forceRender && !forceRefresh && fingerprint === state.lastScanFingerprint) {
@@ -918,30 +828,16 @@
       }
 
       state.lastScanFingerprint = fingerprint;
-      const shouldShowAIBusy = Boolean(shouldUseAI);
-      let analyzedEntries = entries;
-      if (shouldShowAIBusy) {
-        setAIAnalysisBusy(true);
-      }
-      try {
-        analyzedEntries = await analyzeEntriesWithAI(entries, fingerprint, forceRefresh, shouldUseAI);
-      } finally {
-        if (shouldShowAIBusy) {
-          setAIAnalysisBusy(false);
-        }
-      }
       if (scanRequestId !== state.scanRequestId) {
         return;
       }
-      syncTree(analyzedEntries);
+      syncTree(entries);
       updateSearchResults(false);
       updateActiveNodeFromViewport();
       renderTree();
     } finally {
       state.scanInFlight = false;
-      if (!state.aiAnalysisInFlight) {
-        flushDeferredScan();
-      }
+      flushDeferredScan();
     }
   }
 
@@ -4490,8 +4386,7 @@
     saveTree();
     renderTree();
 
-    const shouldRequireAI = await hasConfiguredApiKey();
-    await scanConversation(true, true, shouldRequireAI);
+    await scanConversation(true, true);
   }
 
   function formatNodeOrder(node) {
