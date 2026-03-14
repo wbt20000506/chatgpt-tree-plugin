@@ -8,7 +8,9 @@
   const ROOT_PARENT_SIGNATURE = "__cgpt_tree_root__";
   const MAX_NODES = 180;
   const SCAN_DEBOUNCE_MS = 500;
-  const SCAN_DEBOUNCE_MS_LARGE_TREE = 900;
+  const SCAN_DEBOUNCE_MS_LARGE_TREE = 1200;
+  const SCAN_DEBOUNCE_MS_AI = 900;
+  const SCAN_DEBOUNCE_MS_AI_LARGE_TREE = 1600;
   const ACTIVE_DEBOUNCE_MS = 120;
   const SAVE_DEBOUNCE_MS = 180;
   const URL_POLL_MS = 900;
@@ -19,6 +21,10 @@
   const SCROLL_CORRECTION_DELAY_MS = 180;
   const SCROLL_CORRECTION_MAX_ATTEMPTS = 2;
   const MANUAL_ACTIVE_NODE_HOLD_MS = 1600;
+  const AI_PROMPT_TITLE_LIMIT = 72;
+  const AI_PROMPT_BODY_LIMIT = 180;
+  const AI_INCREMENTAL_CONTEXT_COUNT = 4;
+  const AI_INCREMENTAL_MAX_COUNT = 12;
   const SITE_TYPE_CHATGPT = "chatgpt";
   const SITE_TYPE_UNKNOWN = "unknown";
   const EMPTY_TREE = Object.freeze({
@@ -88,6 +94,7 @@
     lastAIFingerprint: "",
     lastAIRelationships: [],
     lastAITreeSnapshot: null,
+    lastAIEntrySignatures: [],
     savedTreeBase: null,
     scanRequestId: 0,
     lastKnownUrl: location.href,
@@ -683,6 +690,7 @@
     state.lastAIFingerprint = "";
     state.lastAIRelationships = [];
     state.lastAITreeSnapshot = null;
+    state.lastAIEntrySignatures = [];
     state.savedTreeBase = null;
     state.renderedFingerprint = "";
     // 强制清空面板DOM，确保旧树不残留
@@ -763,15 +771,22 @@
 
   function getAdaptiveScanDelay(mutations) {
     const nodeCount = Math.max(0, Object.keys(state.tree.nodes || {}).length - 1);
+    const hasAIConfig = state.lastAIEntrySignatures.length > 0 || Boolean(state.lastAIFingerprint);
     const hasStructuralMutation = (mutations || []).some((mutation) => {
       return mutation.type === "childList" &&
         ((mutation.addedNodes && mutation.addedNodes.length) || (mutation.removedNodes && mutation.removedNodes.length));
     });
 
     if (hasStructuralMutation) {
+      if (hasAIConfig) {
+        return nodeCount > 24 ? SCAN_DEBOUNCE_MS_AI_LARGE_TREE : SCAN_DEBOUNCE_MS_AI;
+      }
       return nodeCount > 24 ? SCAN_DEBOUNCE_MS_LARGE_TREE : SCAN_DEBOUNCE_MS;
     }
 
+    if (hasAIConfig) {
+      return nodeCount > 24 ? 1800 : SCAN_DEBOUNCE_MS_AI;
+    }
     return nodeCount > 24 ? 1200 : SCAN_DEBOUNCE_MS;
   }
 
@@ -788,6 +803,7 @@
     state.lastAIFingerprint = "";
     state.lastAIRelationships = [];
     state.lastAITreeSnapshot = null;
+    state.lastAIEntrySignatures = [];
     await scanConversation(true, true, shouldRequireAI);
   }
 
@@ -4371,6 +4387,7 @@
     state.lastAIFingerprint = "";
     state.lastAIRelationships = [];
     state.lastAITreeSnapshot = null;
+    state.lastAIEntrySignatures = [];
     if (state.savedTreeBase?.relationships?.length) {
       state.savedTreeBase.relationships = state.savedTreeBase.relationships.filter((item) => {
         if (item?.signature === signature) {
@@ -4617,6 +4634,7 @@
       state.lastAIFingerprint = "";
       state.lastAIRelationships = [];
       state.lastAITreeSnapshot = null;
+      state.lastAIEntrySignatures = [];
       return entries;
     }
 
@@ -4629,10 +4647,11 @@
       return applyAIRelationships(entries, state.lastAIRelationships);
     }
 
-    // 获取上一次AI分析的对话树快照，或用户保存的树
-    const previousTree = state.lastAITreeSnapshot || null;
+    const aiPlan = buildAIAnalysisPlan(entries, forceRefresh);
+    const compactEntries = aiPlan.entries.map(compactAIEntry);
+    const previousTree = aiPlan.previousTree;
     const savedTree = forceRefresh ? null : (state.savedTreeBase || null);
-    const prompt = buildRelationshipAnalysisPrompt(entries, previousTree, savedTree);
+    const prompt = buildRelationshipAnalysisPrompt(compactEntries, previousTree, savedTree);
     const response = await callAI(prompt);
 
     if (!response.ok || typeof response.text !== "string") {
@@ -4644,7 +4663,7 @@
 
     let relationships = [];
     try {
-      relationships = parseAIRelationships(response.text, entries);
+      relationships = parseAIRelationships(response.text, compactEntries);
     } catch (error) {
       console.warn("ChatGPT Tree Panel: failed to parse AI relationships", error);
       return applySavedTreeHints(entries, savedTree);
@@ -4657,18 +4676,109 @@
       return applySavedTreeHints(entries, savedTree);
     }
 
+    const mergedRelationships = mergeAIRelationships(
+      state.lastAIRelationships,
+      relationships,
+      aiPlan.mutableQuestionIds,
+      entries.map((entry) => entry.analysisId)
+    );
+
     state.lastAIFingerprint = fingerprint;
-    state.lastAIRelationships = relationships;
+    state.lastAIRelationships = mergedRelationships;
+    state.lastAIEntrySignatures = entries.map((entry) => entry.signature || "");
     // 保存当前分析结果作为对话树快照，供下次分析使用
     state.lastAITreeSnapshot = {
-      relationships: relationships.map((r) => ({
+      relationships: mergedRelationships.map((r) => ({
         questionId: r.questionId,
         parentId: r.parentId
       })),
       analyzedAt: Date.now(),
       entriesCount: entries.length
     };
-    return applyAIRelationships(entries, relationships);
+    return applyAIRelationships(entries, mergedRelationships);
+  }
+
+  function compactAIEntry(entry) {
+    return {
+      ...entry,
+      title: shorten(normalizeText(entry?.title || ""), AI_PROMPT_TITLE_LIMIT),
+      fullText: shorten(normalizeBlockText(entry?.fullText || entry?.title || ""), AI_PROMPT_BODY_LIMIT)
+    };
+  }
+
+  function buildAIAnalysisPlan(entries, forceRefresh) {
+    const fullPlan = {
+      entries,
+      previousTree: state.lastAITreeSnapshot || null,
+      mutableQuestionIds: entries.map((entry) => entry.analysisId)
+    };
+
+    if (forceRefresh || !state.lastAITreeSnapshot || !state.lastAIRelationships.length || !state.lastAIEntrySignatures.length) {
+      return fullPlan;
+    }
+
+    const currentSignatures = entries.map((entry) => entry.signature || "");
+    let commonPrefix = 0;
+    const maxPrefix = Math.min(currentSignatures.length, state.lastAIEntrySignatures.length);
+    while (commonPrefix < maxPrefix && currentSignatures[commonPrefix] === state.lastAIEntrySignatures[commonPrefix]) {
+      commonPrefix += 1;
+    }
+
+    const changedCount = entries.length - commonPrefix;
+    if (changedCount <= 0) {
+      return fullPlan;
+    }
+
+    let sliceStart = Math.max(0, commonPrefix - AI_INCREMENTAL_CONTEXT_COUNT);
+    if (entries.length - sliceStart > AI_INCREMENTAL_MAX_COUNT) {
+      sliceStart = Math.max(0, entries.length - AI_INCREMENTAL_MAX_COUNT);
+    }
+
+    const slicedEntries = entries.slice(sliceStart);
+    if (slicedEntries.length >= entries.length) {
+      return fullPlan;
+    }
+
+    const sliceQuestionIds = new Set(slicedEntries.map((entry) => entry.analysisId));
+    const previousTree = {
+      relationships: state.lastAIRelationships
+        .filter((relation) => sliceQuestionIds.has(relation.questionId))
+        .map((relation) => ({
+          questionId: relation.questionId,
+          parentId: sliceQuestionIds.has(relation.parentId) ? relation.parentId : null
+        }))
+    };
+
+    return {
+      entries: slicedEntries,
+      previousTree,
+      mutableQuestionIds: entries.slice(commonPrefix).map((entry) => entry.analysisId)
+    };
+  }
+
+  function mergeAIRelationships(baseRelationships, nextRelationships, mutableQuestionIds, validQuestionIds) {
+    const mutableSet = new Set(Array.isArray(mutableQuestionIds) ? mutableQuestionIds : []);
+    const validSet = new Set(Array.isArray(validQuestionIds) ? validQuestionIds : []);
+    const merged = [];
+    const seenQuestionIds = new Set();
+
+    for (const relation of Array.isArray(baseRelationships) ? baseRelationships : []) {
+      if (!relation?.questionId || mutableSet.has(relation.questionId) || !validSet.has(relation.questionId)) {
+        continue;
+      }
+      merged.push(relation);
+      seenQuestionIds.add(relation.questionId);
+    }
+
+    for (const relation of Array.isArray(nextRelationships) ? nextRelationships : []) {
+      if (!relation?.questionId || !mutableSet.has(relation.questionId) || !validSet.has(relation.questionId) || seenQuestionIds.has(relation.questionId)) {
+        continue;
+      }
+      merged.push(relation);
+      seenQuestionIds.add(relation.questionId);
+    }
+
+    return merged;
   }
 
   async function hasConfiguredApiKey() {
