@@ -4658,7 +4658,7 @@
       if (requireAI) {
         console.warn("ChatGPT Tree Panel: AI reorder failed, falling back to hard algorithm", response);
       }
-      return applySavedTreeHints(entries, savedTree);
+      return entries;
     }
 
     let relationships = [];
@@ -4666,14 +4666,14 @@
       relationships = parseAIRelationships(response.text, compactEntries);
     } catch (error) {
       console.warn("ChatGPT Tree Panel: failed to parse AI relationships", error);
-      return applySavedTreeHints(entries, savedTree);
+      return entries;
     }
 
     if (!relationships.length) {
       if (requireAI) {
         console.warn("ChatGPT Tree Panel: AI returned no valid relationships, falling back to hard algorithm");
       }
-      return applySavedTreeHints(entries, savedTree);
+      return entries;
     }
 
     const mergedRelationships = mergeAIRelationships(
