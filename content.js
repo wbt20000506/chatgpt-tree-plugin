@@ -79,6 +79,7 @@
     undoButton: null,
     refreshButton: null,
     aiStatusBadge: null,
+    hardAlgorithmButton: null,
     observer: null,
     urlTimer: null,
     scanTimer: null,
@@ -102,6 +103,7 @@
     lastKnownUrl: location.href,
     exportFormat: "markdown",
     exportMarkdownMode: "with-answers",
+    forceHardAlgorithm: false,
     undoSnapshot: null,
     drag: {
       sourceId: null,
@@ -361,7 +363,7 @@
         '<div class="cgpt-tree-header">',
         '  <div class="cgpt-tree-header-top">',
         '    <div class="cgpt-tree-title">',
-        '      <div class="cgpt-tree-title-line"><strong>对话树</strong><span class="cgpt-tree-ai-badge is-unknown">AI状态未知</span></div>',
+        '      <div class="cgpt-tree-title-line"><strong>对话树</strong><span class="cgpt-tree-ai-badge is-unknown">AI状态未知</span><button type="button" class="cgpt-tree-hard-button" data-role="force-hard" title="强制使用硬算法，并打断当前 AI 排序">硬算法</button></div>',
         "    </div>",
         '    <button type="button" class="cgpt-tree-toggle-button" data-role="toggle">折叠</button>',
         "  </div>",
@@ -422,6 +424,7 @@
     state.undoButton = panel.querySelector('[data-role="undo"]');
     state.refreshButton = panel.querySelector('[data-role="refresh"]');
     state.aiStatusBadge = panel.querySelector(".cgpt-tree-ai-badge");
+    state.hardAlgorithmButton = panel.querySelector('[data-role="force-hard"]');
     panel.querySelector('[data-role="export-format"]').value = state.exportFormat;
 
     bindPanelEvents();
@@ -455,6 +458,10 @@
 
     bindClick("refresh", () => {
       refreshConversationAnalysis();
+    });
+
+    bindClick("force-hard", () => {
+      void toggleForcedHardAlgorithm();
     });
 
     bindClick("undo", () => {
@@ -611,6 +618,16 @@
       state.refreshButton.disabled = state.aiAnalysisInFlight;
       state.refreshButton.textContent = state.aiAnalysisInFlight ? "AI排序中..." : "重新排序";
     }
+    if (state.hardAlgorithmButton) {
+      state.hardAlgorithmButton.classList.toggle("is-active", state.forceHardAlgorithm);
+      state.hardAlgorithmButton.textContent = state.forceHardAlgorithm ? "硬算法中" : "硬算法";
+      state.hardAlgorithmButton.setAttribute(
+        "title",
+        state.forceHardAlgorithm
+          ? "当前已强制使用硬算法，再点一次恢复 AI 排序"
+          : "强制使用硬算法，并打断当前 AI 排序"
+      );
+    }
   }
 
   async function refreshAIAvailabilityIndicator() {
@@ -764,6 +781,24 @@
     updateBusyControls();
   }
 
+  async function toggleForcedHardAlgorithm() {
+    state.forceHardAlgorithm = !state.forceHardAlgorithm;
+    updateBusyControls();
+
+    if (state.forceHardAlgorithm) {
+      resetScanState();
+      state.lastAIFingerprint = "";
+      state.lastAIRelationships = [];
+      state.lastAITreeSnapshot = null;
+      state.lastAIEntrySignatures = [];
+      await scanConversation(true, true, false);
+      return;
+    }
+
+    const shouldRequireAI = await hasConfiguredApiKey();
+    await scanConversation(true, true, shouldRequireAI);
+  }
+
   function scheduleScan(delay) {
     window.clearTimeout(state.scanTimer);
     if (state.aiAnalysisInFlight) {
@@ -844,7 +879,7 @@
   }
 
   async function runRefreshConversationAnalysis() {
-    const shouldRequireAI = await hasConfiguredApiKey();
+    const shouldRequireAI = state.forceHardAlgorithm ? false : await hasConfiguredApiKey();
     if (state.aiAnalysisInFlight) {
       return;
     }
@@ -872,7 +907,9 @@
     state.scanInFlight = true;
     const scanRequestId = ++state.scanRequestId;
     try {
-      const shouldUseAI = typeof requireAI === "boolean" ? requireAI : await hasConfiguredApiKey();
+      const shouldUseAI = state.forceHardAlgorithm
+        ? false
+        : (typeof requireAI === "boolean" ? requireAI : await hasConfiguredApiKey());
       const entries = filterIgnoredEntries(extractPromptEntries());
       const fingerprint = JSON.stringify(entries.map((entry) => [entry.analysisId, entry.signature, entry.answerSignature]));
       if (!forceRender && !forceRefresh && fingerprint === state.lastScanFingerprint) {

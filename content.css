@@ -132,6 +132,24 @@
   background: rgba(160, 179, 196, 0.12);
 }
 
+.cgpt-tree-hard-button {
+  min-height: 20px;
+  padding: 0 8px !important;
+  border-radius: 999px !important;
+  font-size: 10px !important;
+  line-height: 1 !important;
+  border: 1px solid rgba(255, 255, 255, 0.12) !important;
+  background: rgba(255, 255, 255, 0.05) !important;
+  color: var(--cgpt-tree-text) !important;
+  white-space: nowrap;
+}
+
+.cgpt-tree-hard-button.is-active {
+  color: #fff1d4 !important;
+  border-color: rgba(247, 185, 85, 0.45) !important;
+  background: rgba(247, 185, 85, 0.18) !important;
+}
+
 .cgpt-tree-summary {
   font-size: 11px;
   line-height: 1.4;
