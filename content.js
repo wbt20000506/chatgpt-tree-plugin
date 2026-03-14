@@ -70,11 +70,16 @@
     resultBadge: null,
     toggleButton: null,
     undoButton: null,
+    refreshButton: null,
     observer: null,
     urlTimer: null,
     scanTimer: null,
     saveTimer: null,
     activeTimer: null,
+    scanInFlight: false,
+    deferredScanDelay: null,
+    deferredScanRequest: null,
+    aiAnalysisInFlight: false,
     renderedFingerprint: "",
     renderVersion: 0,
     treeStructureVersion: 0,
@@ -404,6 +409,7 @@
     state.resultBadge = panel.querySelector(".cgpt-tree-result-badge");
     state.toggleButton = panel.querySelector('[data-role="toggle"]');
     state.undoButton = panel.querySelector('[data-role="undo"]');
+    state.refreshButton = panel.querySelector('[data-role="refresh"]');
     panel.querySelector('[data-role="export-format"]').value = state.exportFormat;
 
     bindPanelEvents();
@@ -532,6 +538,7 @@
     state.toggleButton.textContent = collapsed ? "展开" : "折叠";
     updateExportModeOptions();
     updateUndoButtonState();
+    updateBusyControls();
     saveTree();
   }
 
@@ -572,8 +579,18 @@
     state.undoButton.disabled = !state.undoSnapshot;
   }
 
+  function updateBusyControls() {
+    if (state.refreshButton) {
+      state.refreshButton.disabled = state.aiAnalysisInFlight;
+      state.refreshButton.textContent = state.aiAnalysisInFlight ? "AI排序中..." : "重新排序";
+    }
+  }
+
   function bindGlobalWatchers() {
     const scheduleActiveViewportUpdate = () => {
+      if (state.aiAnalysisInFlight) {
+        return;
+      }
       window.clearTimeout(state.activeTimer);
       state.activeTimer = window.setTimeout(updateActiveNodeFromViewport, ACTIVE_DEBOUNCE_MS);
     };
@@ -634,6 +651,14 @@
       if (state.panel && mutations.every((mutation) => state.panel.contains(mutation.target))) {
         return;
       }
+      if (state.aiAnalysisInFlight) {
+        queueDeferredScan(getAdaptiveScanDelay(mutations), {
+          forceRender: false,
+          forceRefresh: false,
+          requireAI: false
+        });
+        return;
+      }
       scheduleScan(getAdaptiveScanDelay(mutations));
     });
 
@@ -672,9 +697,56 @@
 
   function scheduleScan(delay) {
     window.clearTimeout(state.scanTimer);
+    if (state.aiAnalysisInFlight) {
+      queueDeferredScan(delay, {
+        forceRender: false,
+        forceRefresh: false,
+        requireAI: false
+      });
+      return;
+    }
     state.scanTimer = window.setTimeout(() => {
       void scanConversation(false);
     }, delay);
+  }
+
+  function queueDeferredScan(delay, request) {
+    if (Number.isFinite(delay)) {
+      state.deferredScanDelay = state.deferredScanDelay == null ? delay : Math.min(state.deferredScanDelay, delay);
+    }
+    state.deferredScanRequest = mergeScanRequest(state.deferredScanRequest, request);
+  }
+
+  function mergeScanRequest(currentRequest, nextRequest) {
+    return {
+      forceRender: Boolean(currentRequest?.forceRender || nextRequest?.forceRender),
+      forceRefresh: Boolean(currentRequest?.forceRefresh || nextRequest?.forceRefresh),
+      requireAI: Boolean(currentRequest?.requireAI || nextRequest?.requireAI)
+    };
+  }
+
+  function flushDeferredScan() {
+    const request = state.deferredScanRequest;
+    const delay = state.deferredScanDelay;
+    state.deferredScanRequest = null;
+    state.deferredScanDelay = null;
+    if (!request) {
+      return;
+    }
+    const scheduleDelay = Number.isFinite(delay) ? delay : 0;
+    window.clearTimeout(state.scanTimer);
+    state.scanTimer = window.setTimeout(() => {
+      void scanConversation(request.forceRender, request.forceRefresh, request.requireAI);
+    }, scheduleDelay);
+  }
+
+  function setAIAnalysisBusy(isBusy) {
+    state.aiAnalysisInFlight = Boolean(isBusy);
+    updateBusyControls();
+    if (!isBusy) {
+      flushDeferredScan();
+    }
+    updateSummary(getVisibleLayout().length);
   }
 
   function getAdaptiveScanDelay(mutations) {
@@ -697,40 +769,61 @@
 
   async function runRefreshConversationAnalysis() {
     const shouldRequireAI = await hasConfiguredApiKey();
+    if (state.aiAnalysisInFlight) {
+      return;
+    }
     captureUndoState();
     state.lastAIFingerprint = "";
     state.lastAIRelationships = [];
     state.lastAITreeSnapshot = null;
-    state.tree = createTree();
-    if (state.searchInput) {
-      state.searchInput.value = "";
-    }
-    state.searchResults = [];
-    state.searchIndex = -1;
-    state.activeNodeId = null;
-    state.domNodeMap.clear();
-    saveTree();
     await scanConversation(true, true, shouldRequireAI);
   }
 
   async function scanConversation(forceRender, forceRefresh, requireAI) {
+    if (state.scanInFlight) {
+      queueDeferredScan(0, {
+        forceRender,
+        forceRefresh,
+        requireAI
+      });
+      return;
+    }
+    state.scanInFlight = true;
     const scanRequestId = ++state.scanRequestId;
-    const entries = filterIgnoredEntries(extractPromptEntries());
-    const fingerprint = JSON.stringify(entries.map((entry) => [entry.analysisId, entry.signature, entry.answerSignature]));
-    if (!forceRender && !forceRefresh && fingerprint === state.lastScanFingerprint) {
-      updateActiveNodeFromViewport();
-      return;
-    }
+    try {
+      const entries = filterIgnoredEntries(extractPromptEntries());
+      const fingerprint = JSON.stringify(entries.map((entry) => [entry.analysisId, entry.signature, entry.answerSignature]));
+      if (!forceRender && !forceRefresh && fingerprint === state.lastScanFingerprint) {
+        updateActiveNodeFromViewport();
+        return;
+      }
 
-    state.lastScanFingerprint = fingerprint;
-    const analyzedEntries = await analyzeEntriesWithAI(entries, fingerprint, forceRefresh, Boolean(requireAI));
-    if (scanRequestId !== state.scanRequestId) {
-      return;
+      state.lastScanFingerprint = fingerprint;
+      const shouldShowAIBusy = Boolean(forceRefresh || requireAI);
+      let analyzedEntries = entries;
+      if (shouldShowAIBusy) {
+        setAIAnalysisBusy(true);
+      }
+      try {
+        analyzedEntries = await analyzeEntriesWithAI(entries, fingerprint, forceRefresh, Boolean(requireAI));
+      } finally {
+        if (shouldShowAIBusy) {
+          setAIAnalysisBusy(false);
+        }
+      }
+      if (scanRequestId !== state.scanRequestId) {
+        return;
+      }
+      syncTree(analyzedEntries);
+      updateSearchResults(false);
+      updateActiveNodeFromViewport();
+      renderTree();
+    } finally {
+      state.scanInFlight = false;
+      if (!state.aiAnalysisInFlight) {
+        flushDeferredScan();
+      }
     }
-    syncTree(analyzedEntries);
-    updateSearchResults(false);
-    updateActiveNodeFromViewport();
-    renderTree();
   }
 
   function extractPromptEntries() {
@@ -2745,7 +2838,8 @@
     );
     const total = Math.max(0, Object.keys(state.tree.nodes).length - 1) + deletedCount;
     const searchSuffix = state.tree.searchQuery ? " • 已筛选" : "";
-    state.summary.textContent = "已跟踪 " + total + " 个问题 • 当前可见 " + visibleCount + " 个问题 • 已删除 " + deletedCount + " 个问题" + searchSuffix;
+    const busySuffix = state.aiAnalysisInFlight ? " • AI 排序中..." : "";
+    state.summary.textContent = "已跟踪 " + total + " 个问题 • 当前可见 " + visibleCount + " 个问题 • 已删除 " + deletedCount + " 个问题" + searchSuffix + busySuffix;
     updateResultBadge();
   }
 

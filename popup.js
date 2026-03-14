@@ -180,7 +180,16 @@ async function clearSettings() {
 
 function handleApiTypeChange() {
   const apiType = normalizeApiType(apiTypeSelect.value);
+  modelInput.value = "";
+  apiKeyInput.value = "";
+  if (apiKeyInput.type !== "password") {
+    apiKeyInput.type = "password";
+    toggleApiKeyButton.classList.remove("is-visible");
+    toggleApiKeyButton.setAttribute("aria-label", "显示 API Key");
+    toggleApiKeyButton.setAttribute("title", "显示 API Key");
+  }
   syncApiTypeUI(apiType);
+  setStatus("已切换模型类型，并清空模型名与 API Key，请重新填写后保存验证", "warning");
 }
 
 function toggleApiKeyVisibility() {
