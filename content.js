@@ -75,6 +75,8 @@
     saveTimer: null,
     activeTimer: null,
     renderedFingerprint: "",
+    renderVersion: 0,
+    treeStructureVersion: 0,
     lastScanFingerprint: "",
     lastSavedTreeFingerprint: "",
     lastAIFingerprint: "",
@@ -212,7 +214,9 @@
   }
 
   function createTree() {
-    return JSON.parse(JSON.stringify(EMPTY_TREE));
+    const tree = JSON.parse(JSON.stringify(EMPTY_TREE));
+    tree.version = 0;
+    return tree;
   }
 
   function getStorageKey() {
@@ -265,6 +269,7 @@
 
   function normalizeTree(input) {
     const tree = createTree();
+    tree.version = Number.isFinite(input?.version) ? input.version : 0;
     tree.panelCollapsed = Boolean(input && input.panelCollapsed);
     tree.searchQuery = typeof input?.searchQuery === "string" ? input.searchQuery : "";
     tree.ignoredPromptIndices = Array.isArray(input?.ignoredPromptIndices)
@@ -2394,6 +2399,7 @@
 
     pruneNodes(seenNodeIds, seenSignatures, seenPromptIndices, now);
     rebuildChildren(state.tree);
+    markTreeStructureDirty();
     saveTree();
   }
 
@@ -2546,6 +2552,14 @@
     if (state.activeNodeId === nodeId) {
       state.activeNodeId = null;
     }
+    markTreeStructureDirty();
+  }
+
+  function markTreeStructureDirty() {
+    state.treeStructureVersion += 1;
+    if (state.tree) {
+      state.tree.version = state.treeStructureVersion;
+    }
   }
 
   function updateSearchResults(openFirstMatch) {
@@ -2599,16 +2613,23 @@
     const nodeId = state.searchResults[state.searchIndex];
     revealAncestors(nodeId);
     updateResultBadge();
+    state.renderVersion += 1;
     renderTree();
     jumpToNode(nodeId);
   }
 
   function setAllCollapsed(collapsed) {
+    let changed = false;
     for (const node of Object.values(state.tree.nodes)) {
-      if (node.id !== "root" && node.children.length) {
+      if (node.id !== "root" && node.children.length && node.collapsed !== collapsed) {
         node.collapsed = collapsed;
+        changed = true;
       }
     }
+    if (!changed) {
+      return;
+    }
+    state.renderVersion += 1;
     saveTree();
     renderTree();
   }
@@ -2634,24 +2655,15 @@
     const previousScrollTop = state.body.scrollTop;
 
     const layout = buildVisibleLayout();
-    const fingerprint = JSON.stringify({
-      collapsed: state.tree.panelCollapsed,
-      search: state.tree.searchQuery,
-      active: state.activeNodeId,
-      layout: layout.map((item) => [
-        item.id,
-        item.depth,
-        item.node.signature,
-        item.node.title,
-        item.node.collapsed,
-        item.node.children.length,
-        isSearchMatch(item.id),
-        isSearchCurrent(item.id)
-      ]),
-      dragSource: state.drag.sourceId,
-      dragTarget: state.drag.targetId,
-      dragInvalid: state.drag.invalidTargetId
-    });
+    const fingerprint = [
+      "tree:" + (state.tree?.version || 0),
+      "render:" + state.renderVersion,
+      "collapsed:" + Number(Boolean(state.tree.panelCollapsed)),
+      "search:" + (state.tree.searchQuery || ""),
+      "active:" + (state.activeNodeId || ""),
+      "layout:" + layout.map((item) => item.id + "@" + item.depth).join("|"),
+      "drag:" + [state.drag.sourceId || "", state.drag.targetId || "", state.drag.invalidTargetId || ""].join(":")
+    ].join(";");
 
     if (fingerprint === state.renderedFingerprint) {
       updateSummary(layout.length);
@@ -2728,6 +2740,24 @@
     const items = [];
     let row = 0;
     const query = normalizeText(state.tree.searchQuery || "").toLowerCase();
+    const descendantMatchCache = new Map();
+
+    function hasMatchingDescendantCached(nodeId) {
+      if (descendantMatchCache.has(nodeId)) {
+        return descendantMatchCache.get(nodeId);
+      }
+      const node = state.tree.nodes[nodeId];
+      if (!node) {
+        descendantMatchCache.set(nodeId, false);
+        return false;
+      }
+      const result = node.children.some((childId) => {
+        const child = state.tree.nodes[childId];
+        return child && (nodeMatchesQuery(child, query) || hasMatchingDescendantCached(childId));
+      });
+      descendantMatchCache.set(nodeId, result);
+      return result;
+    }
 
     function walk(nodeId, depth, parentLayout) {
       const node = state.tree.nodes[nodeId];
@@ -2735,7 +2765,7 @@
         return;
       }
       const matches = !query || nodeMatchesQuery(node, query);
-      const descendantMatches = query ? hasMatchingDescendant(nodeId, query) : false;
+      const descendantMatches = query ? hasMatchingDescendantCached(nodeId) : false;
       if (query && !matches && !descendantMatches) {
         return;
       }
@@ -2918,6 +2948,7 @@
     }
     captureUndoState();
     node.collapsed = !node.collapsed;
+    state.renderVersion += 1;
     saveTree();
     renderTree();
   }
@@ -3241,6 +3272,7 @@
     nextParent.children.push(nodeId);
     nextParent.collapsed = false;
 
+    markTreeStructureDirty();
     saveTree();
     renderTree();
   }
@@ -4099,6 +4131,7 @@
       moveNode(activeNode.id, nextParentId);
     }
     state.activeNodeId = activeNode.id;
+    state.renderVersion += 1;
     renderTree();
     scrollTreeNodeIntoView(activeNode.id);
   }
@@ -4131,6 +4164,7 @@
 
     moveNode(activeNode.id, previousSiblingId);
     state.activeNodeId = activeNode.id;
+    state.renderVersion += 1;
     scrollTreeNodeIntoView(activeNode.id);
   }
 
@@ -4150,6 +4184,7 @@
       return;
     }
     setNodeAsRoot(activeNode);
+    state.renderVersion += 1;
     renderTree();
   }
 
@@ -4165,6 +4200,7 @@
     node.parentId = state.tree.rootId;
     state.tree.nodes.root.children = state.tree.nodes.root.children.filter((id) => id !== node.id);
     state.tree.nodes.root.children.push(node.id);
+    markTreeStructureDirty();
     saveTree();
   }
 
@@ -4203,6 +4239,7 @@
     state.tree.ignoredTitles = ignoredTitles;
     removeNode(activeNode.id);
     rebuildChildren(state.tree);
+    markTreeStructureDirty();
     updateSearchResults(false);
     state.lastAIFingerprint = "";
     state.lastAIRelationships = [];
@@ -4301,8 +4338,15 @@
     if (best && best.nodeId !== state.activeNodeId) {
       state.activeNodeId = best.nodeId;
       applyActiveHighlight();
-      renderTree();
+      state.renderedFingerprint = "";
+      requestTreeVisualRefresh();
     }
+  }
+
+  function requestTreeVisualRefresh() {
+    window.requestAnimationFrame(() => {
+      renderTree();
+    });
   }
 
   function getLatestNodeId() {
