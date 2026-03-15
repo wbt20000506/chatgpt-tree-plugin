@@ -927,10 +927,17 @@
     nextTree.panelCollapsed = Boolean(state.tree?.panelCollapsed);
     nextTree.panelPosition = normalizePanelPosition(state.tree?.panelPosition);
     nextTree.panelSize = normalizePanelSize(state.tree?.panelSize);
-    nextTree.searchQuery = typeof state.tree?.searchQuery === "string" ? state.tree.searchQuery : "";
     state.tree = nextTree;
     state.activeNodeId = null;
+    state.manualActiveNodeId = null;
+    state.manualActiveUntil = 0;
     state.domNodeMap.clear();
+    state.searchResults = [];
+    state.searchIndex = -1;
+    if (state.searchInput) {
+      state.searchInput.value = "";
+    }
+    updateSearchResults(false);
     state.renderedFingerprint = "";
     state.lastScanFingerprint = "";
   }
