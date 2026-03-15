@@ -908,9 +908,7 @@
 
   async function runRefreshConversationAnalysis() {
     captureUndoState();
-    state.tree.ignoredPromptIndices = [];
-    state.tree.ignoredSignatures = [];
-    state.tree.ignoredTitles = [];
+    resetTreeForAlgorithmRebuild();
     state.lastAIFingerprint = "";
     state.lastAIRelationships = [];
     state.lastAITreeSnapshot = null;
@@ -922,6 +920,19 @@
     } finally {
       updateBusyControls();
     }
+  }
+
+  function resetTreeForAlgorithmRebuild() {
+    const nextTree = createTree();
+    nextTree.panelCollapsed = Boolean(state.tree?.panelCollapsed);
+    nextTree.panelPosition = normalizePanelPosition(state.tree?.panelPosition);
+    nextTree.panelSize = normalizePanelSize(state.tree?.panelSize);
+    nextTree.searchQuery = typeof state.tree?.searchQuery === "string" ? state.tree.searchQuery : "";
+    state.tree = nextTree;
+    state.activeNodeId = null;
+    state.domNodeMap.clear();
+    state.renderedFingerprint = "";
+    state.lastScanFingerprint = "";
   }
 
   async function scanConversation(forceRender, forceRefresh, requireAI) {
