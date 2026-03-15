@@ -18,7 +18,6 @@
   top: 84px;
   right: 18px;
   width: var(--cgpt-tree-width);
-  height: min(640px, calc(100vh - 108px));
   max-height: calc(100vh - 108px);
   z-index: 2147483640;
   display: flex;
@@ -102,10 +101,6 @@
 
 #cgpt-tree-panel.cgpt-tree-panel-dragging .cgpt-tree-header-top {
   cursor: grabbing;
-}
-
-#cgpt-tree-panel.cgpt-tree-panel-resizing {
-  transition: none;
 }
 
 .cgpt-tree-title strong {
@@ -202,23 +197,6 @@
   display: flex;
   flex-wrap: wrap;
   gap: 6px;
-}
-
-.cgpt-tree-resize-handle {
-  position: absolute;
-  right: 6px;
-  bottom: 6px;
-  width: 18px;
-  height: 18px;
-  cursor: nwse-resize;
-  border-radius: 10px;
-  background:
-    linear-gradient(135deg, transparent 0 35%, rgba(255, 255, 255, 0.12) 35% 46%, transparent 46% 60%, rgba(255, 255, 255, 0.24) 60% 70%, transparent 70%);
-  opacity: 0.75;
-}
-
-.cgpt-tree-resize-handle:hover {
-  opacity: 1;
 }
 
 .cgpt-tree-toggle-button {

@@ -30,15 +30,10 @@
   const SITE_TYPE_GEMINI = "gemini";
   const SITE_TYPE_GITHUB_COPILOT = "github-copilot";
   const SITE_TYPE_UNKNOWN = "unknown";
-  const DEFAULT_PANEL_WIDTH = 388;
-  const DEFAULT_PANEL_HEIGHT = 640;
-  const MIN_PANEL_WIDTH = 320;
-  const MIN_PANEL_HEIGHT = 360;
   const EMPTY_TREE = Object.freeze({
     rootId: "root",
     panelCollapsed: false,
     panelPosition: null,
-    panelSize: null,
     searchQuery: "",
     ignoredPromptIndices: [],
     ignoredSignatures: [],
@@ -129,14 +124,6 @@
       startY: 0,
       originLeft: 0,
       originTop: 0,
-      active: false
-    },
-    panelResize: {
-      pointerId: null,
-      startX: 0,
-      startY: 0,
-      originWidth: 0,
-      originHeight: 0,
       active: false
     },
     hoverTooltipEl: null,
@@ -333,7 +320,6 @@
     tree.version = Number.isFinite(input?.version) ? input.version : 0;
     tree.panelCollapsed = Boolean(input && input.panelCollapsed);
     tree.panelPosition = normalizePanelPosition(input?.panelPosition);
-    tree.panelSize = normalizePanelSize(input?.panelSize);
     tree.searchQuery = typeof input?.searchQuery === "string" ? input.searchQuery : "";
     tree.ignoredPromptIndices = Array.isArray(input?.ignoredPromptIndices)
       ? Array.from(new Set(input.ignoredPromptIndices.filter((value) => Number.isInteger(value) && value >= 0)))
@@ -382,21 +368,6 @@
     return {
       left: Math.max(0, Math.round(left)),
       top: Math.max(0, Math.round(top))
-    };
-  }
-
-  function normalizePanelSize(input) {
-    if (!input || typeof input !== "object") {
-      return null;
-    }
-    const width = Number(input.width);
-    const height = Number(input.height);
-    if (!Number.isFinite(width) || !Number.isFinite(height)) {
-      return null;
-    }
-    return {
-      width: Math.max(MIN_PANEL_WIDTH, Math.round(width)),
-      height: Math.max(MIN_PANEL_HEIGHT, Math.round(height))
     };
   }
 
@@ -495,7 +466,6 @@
         "  </div>",
         "</div>",
         '<div class="cgpt-tree-body"></div>',
-        '<div class="cgpt-tree-resize-handle" data-role="panel-resize-handle" title="拖动调整大小"></div>',
       ].join("");
       document.documentElement.appendChild(panel);
     }
@@ -538,10 +508,6 @@
     const dragHandle = state.panel.querySelector('[data-role="panel-drag-handle"]');
     if (dragHandle) {
       dragHandle.addEventListener("pointerdown", beginPanelDrag);
-    }
-    const resizeHandle = state.panel.querySelector('[data-role="panel-resize-handle"]');
-    if (resizeHandle) {
-      resizeHandle.addEventListener("pointerdown", beginPanelResize);
     }
 
     bindClick("toggle", () => {
@@ -656,7 +622,6 @@
 
   function applyPanelState() {
     const collapsed = state.tree.panelCollapsed;
-    applyStoredPanelSize();
     applyStoredPanelPosition();
     state.panel.classList.toggle("cgpt-tree-collapsed", collapsed);
     state.body.classList.toggle("cgpt-tree-hidden", collapsed);
@@ -724,7 +689,6 @@
       state.activeTimer = window.setTimeout(updateActiveNodeFromViewport, ACTIVE_DEBOUNCE_MS);
     };
     const handleResize = () => {
-      clampStoredPanelSize();
       clampStoredPanelPosition();
       window.clearTimeout(state.activeTimer);
       state.activeTimer = window.setTimeout(() => renderTree(), ACTIVE_DEBOUNCE_MS);
@@ -3377,10 +3341,6 @@
   }
 
   function handleDragMove(event) {
-    if (state.panelResize.active && event.pointerId === state.panelResize.pointerId) {
-      updatePanelResize(event);
-      return;
-    }
     if (state.panelDrag.active && event.pointerId === state.panelDrag.pointerId) {
       updatePanelDrag(event);
       return;
@@ -3411,10 +3371,6 @@
   }
 
   function handleDragEnd(event) {
-    if (state.panelResize.active && event.pointerId === state.panelResize.pointerId) {
-      finishPanelResize();
-      return;
-    }
     if (state.panelDrag.active && event.pointerId === state.panelDrag.pointerId) {
       finishPanelDrag();
       return;
@@ -3573,29 +3529,6 @@
     event.preventDefault();
   }
 
-  function beginPanelResize(event) {
-    if (event.button !== 0 || !state.panel) {
-      return;
-    }
-    const rect = state.panel.getBoundingClientRect();
-    state.panelResize.pointerId = event.pointerId;
-    state.panelResize.startX = event.clientX;
-    state.panelResize.startY = event.clientY;
-    state.panelResize.originWidth = rect.width;
-    state.panelResize.originHeight = rect.height;
-    state.panelResize.active = true;
-    state.panel.classList.add("cgpt-tree-panel-resizing");
-    if (typeof event.currentTarget.setPointerCapture === "function") {
-      try {
-        event.currentTarget.setPointerCapture(event.pointerId);
-      } catch (error) {
-        console.warn("ChatGPT Tree Panel: failed to capture panel resize pointer", error);
-      }
-    }
-    event.preventDefault();
-    event.stopPropagation();
-  }
-
   function updatePanelDrag(event) {
     if (!state.panelDrag.active || !state.panel) {
       return;
@@ -3607,19 +3540,6 @@
       state.panelDrag.originTop + deltaY
     );
     applyPanelPosition(nextPosition.left, nextPosition.top, false);
-  }
-
-  function updatePanelResize(event) {
-    if (!state.panelResize.active || !state.panel) {
-      return;
-    }
-    const deltaX = event.clientX - state.panelResize.startX;
-    const deltaY = event.clientY - state.panelResize.startY;
-    const nextSize = clampPanelSize(
-      state.panelResize.originWidth + deltaX,
-      state.panelResize.originHeight + deltaY
-    );
-    applyPanelSize(nextSize.width, nextSize.height, false);
   }
 
   function finishPanelDrag() {
@@ -3638,40 +3558,15 @@
     state.panelDrag.pointerId = null;
   }
 
-  function finishPanelResize() {
-    if (!state.panelResize.active) {
-      return;
-    }
-    state.panelResize.active = false;
-    if (state.panel) {
-      state.panel.classList.remove("cgpt-tree-panel-resizing");
-      const rect = state.panel.getBoundingClientRect();
-      state.tree.panelSize = clampPanelSize(rect.width, rect.height);
-      state.tree.panelPosition = clampPanelPosition(rect.left, rect.top);
-      saveTree();
-    }
-    state.panelResize.pointerId = null;
-  }
-
   function clampPanelPosition(left, top) {
-    const panelWidth = state.panel?.offsetWidth || DEFAULT_PANEL_WIDTH;
-    const panelHeight = state.panel?.offsetHeight || DEFAULT_PANEL_HEIGHT;
+    const panelWidth = state.panel?.offsetWidth || 388;
+    const panelHeight = state.panel?.offsetHeight || 420;
     const margin = 12;
     const maxLeft = Math.max(margin, window.innerWidth - panelWidth - margin);
     const maxTop = Math.max(margin, window.innerHeight - panelHeight - margin);
     return {
       left: Math.min(Math.max(Math.round(left), margin), maxLeft),
       top: Math.min(Math.max(Math.round(top), margin), maxTop)
-    };
-  }
-
-  function clampPanelSize(width, height) {
-    const margin = 12;
-    const maxWidth = Math.max(MIN_PANEL_WIDTH, window.innerWidth - margin * 2);
-    const maxHeight = Math.max(MIN_PANEL_HEIGHT, window.innerHeight - margin * 2);
-    return {
-      width: Math.min(Math.max(Math.round(width), MIN_PANEL_WIDTH), maxWidth),
-      height: Math.min(Math.max(Math.round(height), MIN_PANEL_HEIGHT), maxHeight)
     };
   }
 
@@ -3686,20 +3581,6 @@
     state.panel.style.bottom = "auto";
     if (persist) {
       state.tree.panelPosition = nextPosition;
-      saveTree();
-    }
-  }
-
-  function applyPanelSize(width, height, persist) {
-    if (!state.panel) {
-      return;
-    }
-    const nextSize = clampPanelSize(width, height);
-    state.panel.style.width = nextSize.width + "px";
-    state.panel.style.height = nextSize.height + "px";
-    state.panel.style.maxHeight = nextSize.height + "px";
-    if (persist) {
-      state.tree.panelSize = nextSize;
       saveTree();
     }
   }
@@ -3719,20 +3600,6 @@
     applyPanelPosition(position.left, position.top, false);
   }
 
-  function applyStoredPanelSize() {
-    if (!state.panel) {
-      return;
-    }
-    const size = normalizePanelSize(state.tree.panelSize);
-    if (!size) {
-      state.panel.style.width = "";
-      state.panel.style.height = "";
-      state.panel.style.maxHeight = "";
-      return;
-    }
-    applyPanelSize(size.width, size.height, false);
-  }
-
   function clampStoredPanelPosition() {
     const position = normalizePanelPosition(state.tree.panelPosition);
     if (!position) {
@@ -3742,19 +3609,6 @@
     applyPanelPosition(nextPosition.left, nextPosition.top, false);
     if (nextPosition.left !== position.left || nextPosition.top !== position.top) {
       state.tree.panelPosition = nextPosition;
-      saveTree();
-    }
-  }
-
-  function clampStoredPanelSize() {
-    const size = normalizePanelSize(state.tree.panelSize);
-    if (!size) {
-      return;
-    }
-    const nextSize = clampPanelSize(size.width, size.height);
-    applyPanelSize(nextSize.width, nextSize.height, false);
-    if (nextSize.width !== size.width || nextSize.height !== size.height) {
-      state.tree.panelSize = nextSize;
       saveTree();
     }
   }
