@@ -2892,6 +2892,7 @@
     }
 
     if (isConversationClosed()) {
+      state.renderedFingerprint = "";
       state.body.innerHTML = "";
       return;
     }
