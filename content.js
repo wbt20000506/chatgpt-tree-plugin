@@ -908,18 +908,29 @@
 
   async function runRefreshConversationAnalysis() {
     captureUndoState();
+    resetPendingScanWork();
     resetTreeForAlgorithmRebuild();
     state.lastAIFingerprint = "";
     state.lastAIRelationships = [];
     state.lastAITreeSnapshot = null;
     state.lastAIEntrySignatures = [];
     saveTree();
+    renderTree();
     updateBusyControls();
     try {
       await scanConversation(true, true);
     } finally {
       updateBusyControls();
     }
+  }
+
+  function resetPendingScanWork() {
+    window.clearTimeout(state.scanTimer);
+    state.scanTimer = null;
+    state.scanRequestId += 1;
+    state.scanInFlight = false;
+    state.deferredScanDelay = null;
+    state.deferredScanRequest = null;
   }
 
   function resetTreeForAlgorithmRebuild() {
