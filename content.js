@@ -480,7 +480,7 @@
     state.refreshButton = panel.querySelector('[data-role="refresh"]');
     state.closeMenu = panel.querySelector('[data-role="close-menu"]');
     panel.querySelector('[data-role="export-format"]').value = state.exportFormat;
-    panel.hidden = true;
+    panel.hidden = false;
 
     bindPanelEvents();
     state.searchInput.value = state.tree.searchQuery || "";
@@ -3003,27 +3003,28 @@
     const closable = isConversationClosable();
     let temporaryClosed = false;
     let permanentClosed = false;
-    if (closable) {
-      try {
+    try {
+      if (closable) {
         const stored = await chrome.storage.local.get(getPermanentCloseStorageKey());
         permanentClosed = Boolean(stored[getPermanentCloseStorageKey()]);
-      } catch (error) {
-        console.warn("ChatGPT Tree Panel: failed to read permanent close state", error);
       }
+    } catch (error) {
+      console.warn("ChatGPT Tree Panel: failed to read permanent close state", error);
+    } finally {
+      state.isConversationTemporarilyClosed = temporaryClosed;
+      state.isConversationPermanentlyClosed = permanentClosed;
+      state.closeStateLoaded = true;
+      updateConversationVisibility();
+      renderTree();
     }
-    state.isConversationTemporarilyClosed = temporaryClosed;
-    state.isConversationPermanentlyClosed = permanentClosed;
-    state.closeStateLoaded = true;
-    updateConversationVisibility();
-    renderTree();
   }
 
   function updateConversationVisibility() {
     if (!state.panel) {
       return;
     }
-    const hidden = state.closeStateLoaded && isConversationClosed();
-    state.panel.hidden = !state.closeStateLoaded || hidden;
+    const hidden = isConversationClosed();
+    state.panel.hidden = hidden;
     if (hidden) {
       hideHoverTooltip();
     }
