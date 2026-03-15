@@ -11,7 +11,7 @@
 1. 打开 Chrome 或 Edge，进入扩展管理页
 2. 打开“开发者模式”
 3. 点击“加载已解压的扩展程序”
-4. 选择项目目录 `chatgpt-tree-plugin`
+4. 选择项目目录 `ai-conversation-tree`
 5. 打开 `https://chatgpt.com/` 或 `https://gemini.google.com/` 并进入任意对话
 
 ## 开源信息
