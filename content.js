@@ -5,6 +5,7 @@
   const PANEL_ID = "cgpt-tree-panel";
   const CURRENT_ATTR = "data-cgpt-tree-current";
   const STORAGE_PREFIX = "cgpt_tree_state_v2:";
+  const DISABLED_STORAGE_PREFIX = "cgpt_tree_disabled_v1:";
   const ROOT_PARENT_SIGNATURE = "__cgpt_tree_root__";
   const MAX_NODES = 180;
   const SCAN_DEBOUNCE_MS = 500;
@@ -124,12 +125,16 @@
       active: false
     },
     hoverTooltipEl: null,
+    closeMenu: null,
     suppressClickUntil: 0,
     cleanupFns: [],
     suppressedTitleAttrs: [],
     suppressedSvgTitles: [],
     manualActiveNodeId: null,
-    manualActiveUntil: 0
+    manualActiveUntil: 0,
+    isConversationTemporarilyClosed: false,
+    isConversationPermanentlyClosed: false,
+    closeStateLoaded: false
   };
 
   const previousRuntime = globalThis[RUNTIME_KEY];
@@ -159,8 +164,10 @@
     state.tree = loadTree();
     state.lastSavedTreeFingerprint = JSON.stringify(state.tree);
     ensurePanel();
+    bindRuntimeMessages();
     bindGlobalWatchers();
     observeConversation();
+    void syncConversationClosedState();
     scheduleScan(80);
   }
 
@@ -247,6 +254,10 @@
 
   function getStorageKey() {
     return STORAGE_PREFIX + state.chatKey;
+  }
+
+  function getPermanentCloseStorageKey(chatKey) {
+    return DISABLED_STORAGE_PREFIX + (chatKey || state.chatKey || "unknown");
   }
 
   function shouldPersistTreeState() {
@@ -386,9 +397,21 @@
         '    <div class="cgpt-tree-title">',
         '      <div class="cgpt-tree-title-line"><strong>对话树</strong><span class="cgpt-tree-drag-hint">可拖动</span></div>',
         "    </div>",
-        '    <button type="button" class="cgpt-tree-toggle-button" data-role="toggle">折叠</button>',
+        '    <div class="cgpt-tree-header-corner-actions">',
+        '      <button type="button" class="cgpt-tree-close-toggle" data-role="toggle-close-menu">关闭</button>',
+        '      <button type="button" class="cgpt-tree-toggle-button" data-role="toggle">折叠</button>',
+        "    </div>",
         "  </div>",
         '  <span class="cgpt-tree-summary">等待检测对话...</span>',
+        '  <div class="cgpt-tree-close-menu cgpt-tree-hidden" data-role="close-menu">',
+        '    <div class="cgpt-tree-close-copy">关闭当前对话树面板</div>',
+        '    <div class="cgpt-tree-close-actions">',
+        '      <button type="button" data-role="close-session">本次对话关闭直到下次访问</button>',
+        '      <button type="button" data-role="close-permanent">本次对话永久关闭</button>',
+        '      <button type="button" data-role="cancel-close">取消</button>',
+        "    </div>",
+        '    <div class="cgpt-tree-close-hint">永久关闭后，可在插件设置页重新开启。</div>',
+        "  </div>",
         '  <div class="cgpt-tree-header-actions">',
         '    <button type="button" class="cgpt-tree-parent-button" data-role="go-parent" title="将当前活跃节点提升一级，设为上级问题的同级">设为上级问题</button>',
         '    <button type="button" data-role="set-child" title="将当前活跃节点降一级，设为前一个同级问题的下级">设为下级问题</button>',
@@ -444,7 +467,9 @@
     state.toggleButton = panel.querySelector('[data-role="toggle"]');
     state.undoButton = panel.querySelector('[data-role="undo"]');
     state.refreshButton = panel.querySelector('[data-role="refresh"]');
+    state.closeMenu = panel.querySelector('[data-role="close-menu"]');
     panel.querySelector('[data-role="export-format"]').value = state.exportFormat;
+    panel.hidden = true;
 
     bindPanelEvents();
     state.searchInput.value = state.tree.searchQuery || "";
@@ -477,6 +502,22 @@
     bindClick("toggle", () => {
       state.tree.panelCollapsed = !state.tree.panelCollapsed;
       applyPanelState();
+    });
+
+    bindClick("toggle-close-menu", () => {
+      state.closeMenu.classList.toggle("cgpt-tree-hidden");
+    });
+
+    bindClick("cancel-close", () => {
+      state.closeMenu.classList.add("cgpt-tree-hidden");
+    });
+
+    bindClick("close-session", () => {
+      void setConversationClosedMode("temporary");
+    });
+
+    bindClick("close-permanent", () => {
+      void setConversationClosedMode("permanent");
     });
 
     bindClick("refresh", () => {
@@ -577,6 +618,7 @@
     state.panel.querySelector(".cgpt-tree-toolbar").classList.toggle("cgpt-tree-hidden", collapsed);
     state.panel.querySelector(".cgpt-tree-status").classList.toggle("cgpt-tree-hidden", collapsed);
     state.toggleButton.textContent = collapsed ? "展开" : "折叠";
+    updateConversationVisibility();
     updateExportModeOptions();
     updateUndoButtonState();
     updateBusyControls();
@@ -684,6 +726,27 @@
     }, URL_POLL_MS);
   }
 
+  function bindRuntimeMessages() {
+    if (!chrome?.runtime?.onMessage) {
+      return;
+    }
+    const listener = (message, sender, sendResponse) => {
+      if (message?.type === "cgpt-tree-get-conversation-status") {
+        void getConversationStatusPayload().then((payload) => sendResponse(payload));
+        return true;
+      }
+      if (message?.type === "cgpt-tree-set-conversation-status") {
+        void setConversationClosedMode(message.mode || "open")
+          .then(() => getConversationStatusPayload())
+          .then((payload) => sendResponse(payload));
+        return true;
+      }
+      return false;
+    };
+    chrome.runtime.onMessage.addListener(listener);
+    addCleanup(() => chrome.runtime.onMessage.removeListener(listener));
+  }
+
   function observeConversation() {
     if (state.observer) {
       state.observer.disconnect();
@@ -726,6 +789,7 @@
     state.lastAIEntrySignatures = [];
     state.savedTreeBase = null;
     state.renderedFingerprint = "";
+    state.isConversationTemporarilyClosed = false;
     // 强制清空面板DOM，确保旧树不残留
     if (state.body) {
       state.body.innerHTML = "";
@@ -734,8 +798,10 @@
     updateSearchResults(false);
     // 加载保存的树
     void loadSavedTreeBase();
+    state.closeStateLoaded = false;
     applyPanelState();
     renderTree();
+    void syncConversationClosedState();
     scheduleScan(400);
   }
 
@@ -2803,6 +2869,11 @@
       return;
     }
 
+    if (isConversationClosed()) {
+      state.body.innerHTML = "";
+      return;
+    }
+
     const previousScrollLeft = state.body.scrollLeft;
     const previousScrollTop = state.body.scrollTop;
 
@@ -2878,6 +2949,14 @@
   }
 
   function updateSummary(visibleCount) {
+    if (isConversationClosed()) {
+      const reason = state.isConversationPermanentlyClosed
+        ? "此对话已永久关闭，可在插件设置页重新开启。"
+        : "此对话本次访问已关闭，下次访问会自动恢复。";
+      state.summary.textContent = reason;
+      updateResultBadge();
+      return;
+    }
     const deletedCount = Math.max(
       Array.isArray(state.tree.ignoredPromptIndices) ? state.tree.ignoredPromptIndices.length : 0,
       Array.isArray(state.tree.ignoredSignatures) ? state.tree.ignoredSignatures.length : 0,
@@ -2888,6 +2967,92 @@
     const busySuffix = state.aiAnalysisInFlight ? " • AI 排序中..." : "";
     state.summary.textContent = "已跟踪 " + total + " 个问题 • 当前可见 " + visibleCount + " 个问题 • 已删除 " + deletedCount + " 个问题" + searchSuffix + busySuffix;
     updateResultBadge();
+  }
+
+  function isConversationClosable() {
+    return shouldPersistTreeState();
+  }
+
+  function isConversationClosed() {
+    return Boolean(state.isConversationTemporarilyClosed || state.isConversationPermanentlyClosed);
+  }
+
+  async function syncConversationClosedState() {
+    const closable = isConversationClosable();
+    let temporaryClosed = false;
+    let permanentClosed = false;
+    if (closable) {
+      try {
+        const stored = await chrome.storage.local.get(getPermanentCloseStorageKey());
+        permanentClosed = Boolean(stored[getPermanentCloseStorageKey()]);
+      } catch (error) {
+        console.warn("ChatGPT Tree Panel: failed to read permanent close state", error);
+      }
+    }
+    state.isConversationTemporarilyClosed = temporaryClosed;
+    state.isConversationPermanentlyClosed = permanentClosed;
+    state.closeStateLoaded = true;
+    updateConversationVisibility();
+    renderTree();
+  }
+
+  function updateConversationVisibility() {
+    if (!state.panel) {
+      return;
+    }
+    const hidden = state.closeStateLoaded && isConversationClosed();
+    state.panel.hidden = !state.closeStateLoaded || hidden;
+    if (hidden) {
+      hideHoverTooltip();
+    }
+    if (state.closeMenu) {
+      state.closeMenu.classList.add("cgpt-tree-hidden");
+    }
+  }
+
+  async function setConversationClosedMode(mode) {
+    const closable = isConversationClosable();
+    if (!closable) {
+      state.isConversationTemporarilyClosed = false;
+      state.isConversationPermanentlyClosed = false;
+      state.closeStateLoaded = true;
+      updateConversationVisibility();
+      renderTree();
+      return;
+    }
+
+    const permanentKey = getPermanentCloseStorageKey();
+    if (mode === "temporary") {
+      await chrome.storage.local.remove(permanentKey);
+      state.isConversationTemporarilyClosed = true;
+      state.isConversationPermanentlyClosed = false;
+    } else if (mode === "permanent") {
+      await chrome.storage.local.set({ [permanentKey]: true });
+      state.isConversationTemporarilyClosed = false;
+      state.isConversationPermanentlyClosed = true;
+    } else {
+      await chrome.storage.local.remove(permanentKey);
+      state.isConversationTemporarilyClosed = false;
+      state.isConversationPermanentlyClosed = false;
+    }
+    state.closeStateLoaded = true;
+    updateConversationVisibility();
+    renderTree();
+  }
+
+  async function getConversationStatusPayload() {
+    if (!state.closeStateLoaded) {
+      await syncConversationClosedState();
+    }
+    return {
+      ok: true,
+      chatKey: state.chatKey,
+      title: document.title || "",
+      closable: isConversationClosable(),
+      temporaryClosed: state.isConversationTemporarilyClosed,
+      permanentClosed: state.isConversationPermanentlyClosed,
+      closed: isConversationClosed()
+    };
   }
 
   function buildVisibleLayout() {

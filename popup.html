@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>对话树设置</title>
+    <link rel="stylesheet" href="popup.css" />
+  </head>
+  <body>
+    <main class="popup">
+      <section class="popup-card">
+        <div class="popup-eyebrow">ChatGPT 对话树</div>
+        <h1>当前对话设置</h1>
+        <p class="popup-subtitle" id="conversation-title">正在读取当前对话…</p>
+        <div class="popup-status" id="status-badge">读取中</div>
+        <p class="popup-message" id="status-message">正在检查这个对话是否被关闭。</p>
+        <div class="popup-actions">
+          <button type="button" id="enable-button" hidden>开启此对话</button>
+          <button type="button" id="refresh-button">重新检测</button>
+        </div>
+      </section>
+      <section class="popup-note">
+        <strong>说明</strong>
+        <p>如果你在面板里把某个对话关闭了，可以在这里查看状态，并重新开启。</p>
+      </section>
+    </main>
+    <script src="popup.js"></script>
+  </body>
+</html>

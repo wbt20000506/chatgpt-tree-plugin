@@ -1,0 +1,117 @@
+:root {
+  color-scheme: dark;
+  --popup-bg: #0b1118;
+  --popup-card: #121b25;
+  --popup-text: #f3f8fb;
+  --popup-muted: #94a3b3;
+  --popup-border: rgba(255, 255, 255, 0.1);
+  --popup-good: #7ee081;
+  --popup-warn: #f7b955;
+}
+
+body {
+  margin: 0;
+  min-width: 320px;
+  background: radial-gradient(circle at top, rgba(88, 196, 220, 0.16), transparent 55%), var(--popup-bg);
+  color: var(--popup-text);
+  font: 14px/1.5 "SF Pro Display", "Segoe UI", ui-sans-serif, sans-serif;
+}
+
+.popup {
+  padding: 14px;
+}
+
+.popup-card,
+.popup-note {
+  border: 1px solid var(--popup-border);
+  border-radius: 18px;
+  background: rgba(18, 27, 37, 0.92);
+  box-shadow: 0 16px 36px rgba(0, 0, 0, 0.28);
+}
+
+.popup-card {
+  padding: 16px;
+}
+
+.popup-eyebrow {
+  color: var(--popup-muted);
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+h1 {
+  margin: 6px 0 6px;
+  font-size: 18px;
+  line-height: 1.2;
+}
+
+.popup-subtitle,
+.popup-message,
+.popup-note p {
+  margin: 0;
+  color: var(--popup-muted);
+}
+
+.popup-status {
+  display: inline-flex;
+  align-items: center;
+  min-height: 24px;
+  margin: 12px 0 10px;
+  padding: 0 10px;
+  border-radius: 999px;
+  border: 1px solid var(--popup-border);
+  background: rgba(255, 255, 255, 0.05);
+  color: var(--popup-muted);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.popup-status.is-open {
+  color: #def7e0;
+  border-color: rgba(126, 224, 129, 0.35);
+  background: rgba(126, 224, 129, 0.15);
+}
+
+.popup-status.is-closed {
+  color: #fff0d4;
+  border-color: rgba(247, 185, 85, 0.35);
+  background: rgba(247, 185, 85, 0.15);
+}
+
+.popup-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 14px;
+}
+
+button {
+  appearance: none;
+  border: 1px solid var(--popup-border);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--popup-text);
+  padding: 10px 12px;
+  font: inherit;
+  cursor: pointer;
+}
+
+button:hover {
+  background: rgba(255, 255, 255, 0.1);
+}
+
+#enable-button {
+  background: rgba(126, 224, 129, 0.15);
+  border-color: rgba(126, 224, 129, 0.35);
+}
+
+.popup-note {
+  margin-top: 12px;
+  padding: 14px 16px;
+}
+
+.popup-note strong {
+  display: block;
+  margin-bottom: 6px;
+  font-size: 13px;
+}

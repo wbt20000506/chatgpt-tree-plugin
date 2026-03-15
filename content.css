@@ -67,6 +67,12 @@
   cursor: grab;
 }
 
+.cgpt-tree-header-corner-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
 .cgpt-tree-header-actions,
 .cgpt-tree-status {
   display: flex;
@@ -165,6 +171,32 @@
 .cgpt-tree-summary {
   font-size: 11px;
   line-height: 1.4;
+}
+
+.cgpt-tree-close-menu {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 12px;
+  border-radius: 14px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.cgpt-tree-close-copy,
+.cgpt-tree-close-hint {
+  font-size: 11px;
+  line-height: 1.4;
+}
+
+.cgpt-tree-close-hint {
+  color: var(--cgpt-tree-muted);
+}
+
+.cgpt-tree-close-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
 }
 
 .cgpt-tree-toggle-button {
