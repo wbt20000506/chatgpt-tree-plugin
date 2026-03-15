@@ -6,6 +6,7 @@
   const messageEl = document.getElementById("status-message");
   const enableButton = document.getElementById("enable-button");
   const refreshButton = document.getElementById("refresh-button");
+  const SUPPORTED_TAB_RE = /^https:\/\/(chatgpt\.com|gemini\.google\.com)\//i;
 
   enableButton.addEventListener("click", async () => {
     enableButton.disabled = true;
@@ -23,11 +24,11 @@
 
   async function updateStatus(mode) {
     const tab = await getCurrentTab();
-    if (!tab?.id || !/^https:\/\/chatgpt\.com\//.test(tab.url || "")) {
+    if (!tab?.id || !SUPPORTED_TAB_RE.test(tab.url || "")) {
       setStatus({
-        title: "未打开 ChatGPT 对话",
+        title: "未打开支持的对话页面",
         badge: "未检测到对话",
-        message: "请先打开一个 chatgpt.com 对话页面，再查看关闭状态。",
+        message: "请先打开 chatgpt.com 或 gemini.google.com 的对话页面，再查看关闭状态。",
         enable: false,
         closed: false
       });

@@ -27,6 +27,7 @@
   const AI_INCREMENTAL_CONTEXT_COUNT = 4;
   const AI_INCREMENTAL_MAX_COUNT = 12;
   const SITE_TYPE_CHATGPT = "chatgpt";
+  const SITE_TYPE_GEMINI = "gemini";
   const SITE_TYPE_UNKNOWN = "unknown";
   const EMPTY_TREE = Object.freeze({
     rootId: "root",
@@ -239,6 +240,15 @@
       }
       return parts[1];
     }
+    if (siteType === SITE_TYPE_GEMINI) {
+      if (parts[0] === "app" && parts[1]) {
+        return "gemini-" + parts[1];
+      }
+      if (parts[0] === "u" && parts[2]) {
+        return "gemini-" + parts[2];
+      }
+      return "gemini:" + [location.pathname || "/", location.search || "", location.hash || ""].join("");
+    }
     if (siteType === SITE_TYPE_CHATGPT) {
       return "chatgpt-home";
     }
@@ -398,7 +408,7 @@
         '      <div class="cgpt-tree-title-line"><strong>对话树</strong><span class="cgpt-tree-drag-hint">可拖动</span></div>',
         "    </div>",
         '    <div class="cgpt-tree-header-corner-actions">',
-        '      <button type="button" class="cgpt-tree-close-toggle" data-role="toggle-close-menu">关闭</button>',
+        '      <button type="button" class="cgpt-tree-toggle-button" data-role="toggle-close-menu">关闭</button>',
         '      <button type="button" class="cgpt-tree-toggle-button" data-role="toggle">折叠</button>',
         "    </div>",
         "  </div>",
@@ -1077,6 +1087,9 @@
   }
 
   function getConversationTurns() {
+    if (state.siteType === SITE_TYPE_GEMINI) {
+      return getGeminiConversationTurns();
+    }
     return getChatGPTConversationTurns();
   }
 
@@ -1089,6 +1102,9 @@
     const hostname = String(location.hostname || "").toLowerCase();
     if (hostname === "chatgpt.com") {
       return SITE_TYPE_CHATGPT;
+    }
+    if (hostname === "gemini.google.com") {
+      return SITE_TYPE_GEMINI;
     }
     return SITE_TYPE_UNKNOWN;
   }
@@ -1186,10 +1202,12 @@
     const candidates = getOrderedRoleCandidates([
       { role: "user", selector: "user-query" },
       { role: "assistant", selector: "model-response" },
+      { role: "user", selector: "message-content[user-query]" },
+      { role: "assistant", selector: "message-content[model-response]" },
       { role: "user", selector: '[data-test-id*="user-query"], [data-testid*="user-query"]' },
       { role: "assistant", selector: '[data-test-id*="model-response"], [data-testid*="model-response"]' },
-      { role: "user", selector: '[class*="user-query"], [class*="query-text"]' },
-      { role: "assistant", selector: '[class*="model-response"], [class*="response-content"]' }
+      { role: "user", selector: '[class*="user-query"], [class*="query-text"], [class*="userQuery"]' },
+      { role: "assistant", selector: '[class*="model-response"], [class*="response-content"], [class*="modelResponse"]' }
     ]);
 
     if (candidates.length) {
@@ -1199,6 +1217,9 @@
     }
 
     return getGenericConversationTurns([
+      'chat-window',
+      'conversation-container',
+      '[data-test-id*="conversation"]',
       '[data-test-id*="conversation"], [data-testid*="conversation"]',
       '[class*="conversation-container"]',
       'main'
@@ -4170,8 +4191,12 @@
     const cleaned = rawTitle
       .replace(/\s*[-|]\s*ChatGPT\s*$/i, "")
       .replace(/\s*[|]\s*ChatGPT\s*$/i, "")
+      .replace(/\s*[-|]\s*Gemini\s*$/i, "")
+      .replace(/\s*[|]\s*Gemini\s*$/i, "")
       .trim();
-    return cleaned && !/^chatgpt$/i.test(cleaned) ? cleaned : "ChatGPT对话";
+    return cleaned && !/^(chatgpt|gemini)$/i.test(cleaned)
+      ? cleaned
+      : (state.siteType === SITE_TYPE_GEMINI ? "Gemini对话" : "ChatGPT对话");
   }
 
   function extractConversationTitleFromPage() {
@@ -4191,7 +4216,7 @@
         if (!text) {
           continue;
         }
-        if (/^(chatgpt|对话树)$/i.test(text)) {
+        if (/^(chatgpt|gemini|对话树)$/i.test(text)) {
           continue;
         }
         if (text.length < 2) {

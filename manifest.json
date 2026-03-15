@@ -14,7 +14,8 @@
     "tabs"
   ],
   "host_permissions": [
-    "https://chatgpt.com/*"
+    "https://chatgpt.com/*",
+    "https://gemini.google.com/*"
   ],
   "action": {
     "default_title": "ChatGPT 对话树面板",
@@ -27,7 +28,8 @@
   "content_scripts": [
     {
       "matches": [
-        "https://chatgpt.com/*"
+        "https://chatgpt.com/*",
+        "https://gemini.google.com/*"
       ],
       "js": [
         "hard-algorithm.js",
