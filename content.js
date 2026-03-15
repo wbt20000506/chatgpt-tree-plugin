@@ -675,8 +675,10 @@
 
   function updateBusyControls() {
     if (state.refreshButton) {
-      state.refreshButton.disabled = false;
-      state.refreshButton.textContent = "重新排序";
+      const busy = Boolean(state.scanInFlight || state.aiAnalysisInFlight);
+      state.refreshButton.disabled = busy;
+      state.refreshButton.textContent = busy ? "重新排序中..." : "重新排序";
+      state.refreshButton.classList.toggle("cgpt-tree-busy-button", busy);
     }
   }
 
@@ -914,7 +916,12 @@
     state.lastAITreeSnapshot = null;
     state.lastAIEntrySignatures = [];
     saveTree();
-    await scanConversation(true, true);
+    updateBusyControls();
+    try {
+      await scanConversation(true, true);
+    } finally {
+      updateBusyControls();
+    }
   }
 
   async function scanConversation(forceRender, forceRefresh, requireAI) {
@@ -927,6 +934,7 @@
       return;
     }
     state.scanInFlight = true;
+    updateBusyControls();
     const scanRequestId = ++state.scanRequestId;
     try {
       const entries = filterIgnoredEntries(extractPromptEntries());
@@ -946,6 +954,7 @@
       renderTree();
     } finally {
       state.scanInFlight = false;
+      updateBusyControls();
       flushDeferredScan();
     }
   }

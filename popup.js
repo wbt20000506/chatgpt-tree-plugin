@@ -9,15 +9,11 @@
   const SUPPORTED_TAB_RE = /^https:\/\/(chatgpt\.com|gemini\.google\.com)\//i;
 
   enableButton.addEventListener("click", async () => {
-    enableButton.disabled = true;
-    await updateStatus("open");
-    enableButton.disabled = false;
+    await runWithButtonFeedback(enableButton, "开启中...", () => updateStatus("open"));
   });
 
   refreshButton.addEventListener("click", async () => {
-    refreshButton.disabled = true;
-    await updateStatus();
-    refreshButton.disabled = false;
+    await runWithButtonFeedback(refreshButton, "重新检测中...", () => updateStatus());
   });
 
   await updateStatus();
@@ -102,6 +98,20 @@
   async function getCurrentTab() {
     const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
     return tabs[0] || null;
+  }
+
+  async function runWithButtonFeedback(button, busyText, task) {
+    const originalText = button.textContent;
+    button.disabled = true;
+    button.classList.add("is-busy");
+    button.textContent = busyText;
+    try {
+      await task();
+    } finally {
+      button.disabled = false;
+      button.classList.remove("is-busy");
+      button.textContent = originalText;
+    }
   }
 
   async function ensureContentScriptInjected(tabId) {

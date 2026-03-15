@@ -358,6 +358,16 @@
   transform: translateY(-1px);
 }
 
+#cgpt-tree-panel button:active {
+  background: rgba(255, 255, 255, 0.18);
+  transform: translateY(1px) scale(0.985);
+}
+
+#cgpt-tree-panel button.cgpt-tree-busy-button {
+  background: rgba(88, 196, 220, 0.16);
+  box-shadow: inset 0 0 0 1px rgba(88, 196, 220, 0.22);
+}
+
 #cgpt-tree-panel button:disabled {
   opacity: 0.42;
   cursor: not-allowed;

@@ -133,11 +133,22 @@ button {
   font: 13px/1.25 "SF Pro Display", "Segoe UI", ui-sans-serif, sans-serif;
   font-weight: 600;
   cursor: pointer;
+  transition: transform 120ms ease, background-color 120ms ease, box-shadow 120ms ease, opacity 120ms ease;
 }
 
 button:hover {
   background: rgba(255, 255, 255, 0.1);
   transform: translateY(-1px);
+}
+
+button:active {
+  transform: translateY(1px) scale(0.985);
+  background: rgba(255, 255, 255, 0.14);
+}
+
+button.is-busy {
+  box-shadow: 0 0 0 2px rgba(88, 196, 220, 0.12);
+  background: rgba(88, 196, 220, 0.12);
 }
 
 #enable-button {
