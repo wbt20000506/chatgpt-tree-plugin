@@ -442,6 +442,7 @@
         "    </div>",
         '    <div class="cgpt-tree-header-corner-actions">',
         '      <button type="button" class="cgpt-tree-toggle-button" data-role="toggle-close-menu">关闭</button>',
+        '      <button type="button" class="cgpt-tree-toggle-button" data-role="linear-sort" title="将所有节点按时间线性排序（会清空层级关系）">线性排序</button>',
         '      <button type="button" class="cgpt-tree-toggle-button" data-role="toggle">折叠</button>',
         "    </div>",
         "  </div>",
@@ -552,6 +553,10 @@
 
     bindClick("toggle-close-menu", () => {
       state.closeMenu.classList.toggle("cgpt-tree-hidden");
+    });
+
+    bindClick("linear-sort", () => {
+      linearSortNodesByTime();
     });
 
     bindClick("cancel-close", () => {
@@ -4826,6 +4831,51 @@
     state.activeNodeId = activeNode.id;
     state.renderVersion += 1;
     scrollTreeNodeIntoView(activeNode.id);
+  }
+
+  function linearSortNodesByTime() {
+    if (!state.tree) {
+      return;
+    }
+    if (isConversationClosed()) {
+      return;
+    }
+
+    const rootId = state.tree.rootId || "root";
+    const root = state.tree.nodes[rootId] || state.tree.nodes.root;
+    if (!root) {
+      return;
+    }
+
+    captureUndoState();
+
+    const nodes = Object.values(state.tree.nodes)
+      .filter((node) => node && node.id !== rootId)
+      .sort((a, b) => {
+        const aIndex = Number.isFinite(a.promptIndex) ? a.promptIndex : Number.POSITIVE_INFINITY;
+        const bIndex = Number.isFinite(b.promptIndex) ? b.promptIndex : Number.POSITIVE_INFINITY;
+        if (aIndex !== bIndex) {
+          return aIndex - bIndex;
+        }
+        return (a.createdAt - b.createdAt) || a.id.localeCompare(b.id);
+      });
+
+    root.children = [];
+    for (const node of nodes) {
+      node.parentId = rootId;
+      node.children = [];
+      node.collapsed = false;
+      root.children.push(node.id);
+    }
+
+    markTreeStructureDirty();
+    updateSearchResults(false);
+    saveTree();
+    state.renderVersion += 1;
+    renderTree();
+    if (state.activeNodeId) {
+      scrollTreeNodeIntoView(state.activeNodeId, { alignX: "start" });
+    }
   }
 
   function setActiveNodeAsRoot() {
