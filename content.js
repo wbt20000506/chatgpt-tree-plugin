@@ -157,22 +157,51 @@
 
   boot();
 
-  function boot() {
-    resetScanState();
+  function isSupportedConversationRoute(siteType) {
+    const path = String(location.pathname || "/");
+    if (siteType === SITE_TYPE_CHATGPT) {
+      return path === "/" || path.startsWith("/c/");
+    }
+    if (siteType === SITE_TYPE_GEMINI) {
+      return path === "/app" || path.startsWith("/app/");
+    }
+    return false;
+  }
+
+  function removePanelUI() {
     document.querySelectorAll("#" + PANEL_ID + ", .cgpt-tree-hover-tooltip, .cgpt-tree-drag-ghost").forEach((node) => {
       if (node?.remove) {
         node.remove();
       }
     });
+    state.panel = null;
+    state.body = null;
+    state.searchInput = null;
+    state.searchApplyButton = null;
+    state.summary = null;
+    state.resultBadge = null;
+    state.toggleButton = null;
+    state.undoButton = null;
+    state.refreshButton = null;
+    state.closeMenu = null;
+  }
+
+  function boot() {
+    resetScanState();
+    removePanelUI();
     state.siteType = detectSiteType();
     state.chatKey = getChatKey();
     state.tree = loadTree();
     state.lastSavedTreeFingerprint = JSON.stringify(state.tree);
-    ensurePanel();
     bindRuntimeMessages();
     bindGlobalWatchers();
-    observeConversation();
     void syncConversationClosedState();
+    if (!isSupportedConversationRoute(state.siteType)) {
+      setConversationWorkSuspended(true);
+      return;
+    }
+    ensurePanel();
+    setConversationWorkSuspended(false);
     scheduleScan(80);
   }
 
@@ -720,6 +749,9 @@
       if (isConversationClosed()) {
         return;
       }
+      if (!state.panel || !isSupportedConversationRoute(state.siteType)) {
+        return;
+      }
       if (state.aiAnalysisInFlight) {
         return;
       }
@@ -727,6 +759,9 @@
       state.activeTimer = window.setTimeout(updateActiveNodeFromViewport, ACTIVE_DEBOUNCE_MS);
     };
     const handleResize = () => {
+      if (!state.panel || !isSupportedConversationRoute(state.siteType)) {
+        return;
+      }
       clampStoredPanelPosition();
       window.clearTimeout(state.activeTimer);
       state.activeTimer = window.setTimeout(() => renderTree(), ACTIVE_DEBOUNCE_MS);
@@ -832,6 +867,15 @@
     state.chatKey = getChatKey();
     state.tree = loadTree();
     state.lastSavedTreeFingerprint = JSON.stringify(state.tree);
+
+    if (!isSupportedConversationRoute(state.siteType)) {
+      setConversationWorkSuspended(true);
+      removePanelUI();
+      return;
+    }
+
+    ensurePanel();
+    setConversationWorkSuspended(false);
     state.activeNodeId = null;
     state.domNodeMap.clear();
     state.lastScanFingerprint = "";
@@ -846,8 +890,12 @@
     if (state.body) {
       state.body.innerHTML = "";
     }
-    state.searchInput.value = state.tree.searchQuery || "";
-    state.searchDraft = state.searchInput.value || "";
+    if (state.searchInput) {
+      state.searchInput.value = state.tree.searchQuery || "";
+      state.searchDraft = state.searchInput.value || "";
+    } else {
+      state.searchDraft = String(state.tree.searchQuery || "");
+    }
     updateSearchResults(false);
     // 加载保存的树
     void loadSavedTreeBase();
