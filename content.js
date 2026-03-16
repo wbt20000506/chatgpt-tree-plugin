@@ -4751,7 +4751,7 @@
         nodeId
       });
       window.requestAnimationFrame(() => {
-        scrollTreeNodeIntoView(nodeId);
+        scrollTreeNodeIntoView(nodeId, { alignX: "start" });
       });
       return;
     }
@@ -4762,7 +4762,7 @@
     });
     window.requestAnimationFrame(() => {
       scrollTargetIntoView(target);
-      scrollTreeNodeIntoView(nodeId);
+      scrollTreeNodeIntoView(nodeId, { alignX: "start" });
     });
   }
 
@@ -4937,43 +4937,64 @@
     return chars.slice(0, 30).join("") + "...";
   }
 
-  function scrollTreeNodeIntoView(nodeId) {
+  function scrollTreeNodeIntoView(nodeId, options) {
     if (!nodeId || !state.body) {
       return;
     }
     const group = state.body.querySelector('g[data-id="' + nodeId + '"]');
-    if (!group || typeof group.getBBox !== "function") {
+    if (!group || typeof group.getBoundingClientRect !== "function") {
       return;
     }
 
-    const bbox = group.getBBox();
-    const padding = 32;
-    const minLeft = bbox.x - padding;
-    const maxRight = bbox.x + bbox.width + padding;
-    const minTop = bbox.y - padding;
-    const maxBottom = bbox.y + bbox.height + padding;
-
-    if (minLeft < state.body.scrollLeft) {
-      state.body.scrollTo({ left: Math.max(0, minLeft), behavior: "smooth" });
-    } else if (maxRight > state.body.scrollLeft + state.body.clientWidth) {
-      state.body.scrollTo({
-        left: Math.max(0, maxRight - state.body.clientWidth),
-        behavior: "smooth"
-      });
+    const bodyRect = state.body.getBoundingClientRect();
+    const groupRect = group.getBoundingClientRect();
+    if (!bodyRect.width || !bodyRect.height || !groupRect.width || !groupRect.height) {
+      return;
     }
 
-    if (minTop < state.body.scrollTop) {
-      state.body.scrollTo({
-        left: state.body.scrollLeft,
-        top: Math.max(0, minTop),
-        behavior: "smooth"
-      });
-    } else if (maxBottom > state.body.scrollTop + state.body.clientHeight) {
-      state.body.scrollTo({
-        left: state.body.scrollLeft,
-        top: Math.max(0, maxBottom - state.body.clientHeight),
-        behavior: "smooth"
-      });
+    const labelEl = group.querySelector(".cgpt-tree-node-label");
+    const circleEl = group.querySelector("circle");
+    const labelRect = labelEl?.getBoundingClientRect?.() || null;
+    const circleRect = circleEl?.getBoundingClientRect?.() || null;
+    const contentLeft = Math.min(
+      labelRect?.left ?? groupRect.left,
+      circleRect?.left ?? groupRect.left
+    );
+    const contentRight = Math.max(
+      labelRect?.right ?? groupRect.right,
+      circleRect?.right ?? groupRect.right
+    );
+
+    const padding = 32;
+    const minLeft = contentLeft - bodyRect.left + state.body.scrollLeft - padding;
+    const maxRight = contentRight - bodyRect.left + state.body.scrollLeft + padding;
+    const minTop = groupRect.top - bodyRect.top + state.body.scrollTop - padding;
+    const maxBottom = groupRect.bottom - bodyRect.top + state.body.scrollTop + padding;
+
+    const alignX = options?.alignX || "ensure";
+    let nextLeft = state.body.scrollLeft;
+    let nextTop = state.body.scrollTop;
+
+    if (alignX === "start") {
+      const dotShift = circleRect?.width || 16;
+      const anchorLeft = (labelRect?.left ?? contentLeft) - bodyRect.left + state.body.scrollLeft - dotShift;
+      nextLeft = Math.max(0, anchorLeft - padding);
+    } else {
+      if (minLeft < nextLeft) {
+        nextLeft = Math.max(0, minLeft);
+      } else if (maxRight > nextLeft + state.body.clientWidth) {
+        nextLeft = Math.max(0, maxRight - state.body.clientWidth);
+      }
+    }
+
+    if (minTop < nextTop) {
+      nextTop = Math.max(0, minTop);
+    } else if (maxBottom > nextTop + state.body.clientHeight) {
+      nextTop = Math.max(0, maxBottom - state.body.clientHeight);
+    }
+
+    if (nextLeft !== state.body.scrollLeft || nextTop !== state.body.scrollTop) {
+      state.body.scrollTo({ left: nextLeft, top: nextTop, behavior: "smooth" });
     }
   }
 
