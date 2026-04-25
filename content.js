@@ -10,14 +10,10 @@
   const MAX_NODES = 180;
   const SCAN_DEBOUNCE_MS = 500;
   const SCAN_DEBOUNCE_MS_LARGE_TREE = 1200;
-  const SCAN_DEBOUNCE_MS_AI = 900;
-  const SCAN_DEBOUNCE_MS_AI_LARGE_TREE = 1600;
   // ChatGPT/Gemini often stream tokens continuously, which can keep a pure debounce
   // from ever firing. We throttle scans so new user turns appear promptly.
   const SCAN_THROTTLE_MS = 700;
   const SCAN_THROTTLE_MS_LARGE_TREE = 1200;
-  const SCAN_THROTTLE_MS_AI = 1000;
-  const SCAN_THROTTLE_MS_AI_LARGE_TREE = 1600;
   const ACTIVE_DEBOUNCE_MS = 120;
   const SAVE_DEBOUNCE_MS = 180;
   const URL_POLL_MS = 900;
@@ -28,10 +24,6 @@
   const SCROLL_CORRECTION_DELAY_MS = 180;
   const SCROLL_CORRECTION_MAX_ATTEMPTS = 2;
   const MANUAL_ACTIVE_NODE_HOLD_MS = 1600;
-  const AI_PROMPT_TITLE_LIMIT = 72;
-  const AI_PROMPT_BODY_LIMIT = 180;
-  const AI_INCREMENTAL_CONTEXT_COUNT = 4;
-  const AI_INCREMENTAL_MAX_COUNT = 12;
   const SITE_TYPE_CHATGPT = "chatgpt";
   const SITE_TYPE_GEMINI = "gemini";
   const SITE_TYPE_GITHUB_COPILOT = "github-copilot";
@@ -99,18 +91,12 @@
     scanInFlight: false,
     deferredScanDelay: null,
     deferredScanRequest: null,
-    aiAnalysisInFlight: false,
     lastScanStartedAt: 0,
     renderedFingerprint: "",
     renderVersion: 0,
     treeStructureVersion: 0,
     lastScanFingerprint: "",
     lastSavedTreeFingerprint: "",
-    lastAIFingerprint: "",
-    lastAIRelationships: [],
-    lastAITreeSnapshot: null,
-    lastAIEntrySignatures: [],
-    savedTreeBase: null,
     scanRequestId: 0,
     lastKnownUrl: location.href,
     exportFormat: "markdown",
@@ -171,7 +157,6 @@
       hasObserver: Boolean(state.observer),
       hasPanel: Boolean(document.getElementById(PANEL_ID)),
       scanInFlight: state.scanInFlight,
-      aiAnalysisInFlight: state.aiAnalysisInFlight,
       scanDueAt: state.scanDueAt || 0,
       lastScanStartedAt: state.lastScanStartedAt || 0
     })
@@ -484,7 +469,6 @@
         '    <button type="button" data-role="set-child" title="将当前活跃节点降一级，设为前一个同级问题的下级">设为下级问题</button>',
         '    <button type="button" data-role="set-root" title="将当前活跃节点设为根问题（切断与父节点的关联）">设为根问题</button>',
         '    <button type="button" data-role="focus-active" title="跳转到最新问题">最新问题</button>',
-        '    <button type="button" data-role="save-tree" title="保存当前对话树，以后以此为基础调整">保存树</button>',
         "  </div>",
         "</div>",
         '<div class="cgpt-tree-toolbar">',
@@ -696,10 +680,6 @@
       void deleteActiveNodeForever();
     });
 
-    bindClick("save-tree", () => {
-      void saveCurrentTreeAsBase();
-    });
-
     window.addEventListener("pointermove", handleDragMove);
     addCleanup(() => window.removeEventListener("pointermove", handleDragMove));
     window.addEventListener("pointerup", handleDragEnd);
@@ -747,9 +727,6 @@
       state.searchInput.value = state.tree.searchQuery || "";
       state.searchDraft = state.searchInput.value || "";
     }
-    state.lastAIFingerprint = "";
-    state.lastAIRelationships = [];
-    state.lastAITreeSnapshot = null;
     updateSearchResults(false);
     updateUndoButtonState();
     saveTree();
@@ -765,7 +742,7 @@
 
   function updateBusyControls() {
     if (state.refreshButton) {
-      const busy = Boolean(state.scanInFlight || state.aiAnalysisInFlight);
+      const busy = Boolean(state.scanInFlight);
       state.refreshButton.disabled = busy;
       state.refreshButton.textContent = busy ? "重新排序中..." : "重新排序";
       state.refreshButton.classList.toggle("cgpt-tree-busy-button", busy);
@@ -778,9 +755,6 @@
         return;
       }
       if (!state.panel || !isSupportedConversationRoute(state.siteType)) {
-        return;
-      }
-      if (state.aiAnalysisInFlight) {
         return;
       }
       window.clearTimeout(state.activeTimer);
@@ -871,14 +845,6 @@
       if (state.panel && mutations.every((mutation) => state.panel.contains(mutation.target))) {
         return;
       }
-      if (state.aiAnalysisInFlight) {
-        queueDeferredScan(getAdaptiveScanDelay(mutations), {
-          forceRender: false,
-          forceRefresh: false,
-          requireAI: false
-        });
-        return;
-      }
       scheduleScan(getAdaptiveScanDelay(mutations));
     });
 
@@ -907,11 +873,6 @@
     state.activeNodeId = null;
     state.domNodeMap.clear();
     state.lastScanFingerprint = "";
-    state.lastAIFingerprint = "";
-    state.lastAIRelationships = [];
-    state.lastAITreeSnapshot = null;
-    state.lastAIEntrySignatures = [];
-    state.savedTreeBase = null;
     state.renderedFingerprint = "";
     state.isConversationTemporarilyClosed = false;
     // 强制清空面板DOM，确保旧树不残留
@@ -925,8 +886,6 @@
       state.searchDraft = String(state.tree.searchQuery || "");
     }
     updateSearchResults(false);
-    // 加载保存的树
-    void loadSavedTreeBase();
     state.closeStateLoaded = false;
     applyPanelState();
     renderTree();
@@ -940,7 +899,6 @@
     state.scanInFlight = false;
     state.deferredScanDelay = null;
     state.deferredScanRequest = null;
-    state.aiAnalysisInFlight = false;
     state.scanDueAt = 0;
     state.scanRequestId += 1;
     updateBusyControls();
@@ -948,23 +906,11 @@
 
   function getScanThrottleIntervalMs() {
     const nodeCount = Math.max(0, Object.keys(state.tree?.nodes || {}).length - 1);
-    const hasAIConfig = state.lastAIEntrySignatures.length > 0 || Boolean(state.lastAIFingerprint);
-    if (hasAIConfig) {
-      return nodeCount > 24 ? SCAN_THROTTLE_MS_AI_LARGE_TREE : SCAN_THROTTLE_MS_AI;
-    }
     return nodeCount > 24 ? SCAN_THROTTLE_MS_LARGE_TREE : SCAN_THROTTLE_MS;
   }
 
   function scheduleScan(delay) {
     if (state.workSuspended || isConversationClosed()) {
-      return;
-    }
-    if (state.aiAnalysisInFlight) {
-      queueDeferredScan(delay, {
-        forceRender: false,
-        forceRefresh: false,
-        requireAI: false
-      });
       return;
     }
 
@@ -1004,8 +950,7 @@
   function mergeScanRequest(currentRequest, nextRequest) {
     return {
       forceRender: Boolean(currentRequest?.forceRender || nextRequest?.forceRender),
-      forceRefresh: Boolean(currentRequest?.forceRefresh || nextRequest?.forceRefresh),
-      requireAI: Boolean(currentRequest?.requireAI || nextRequest?.requireAI)
+      forceRefresh: Boolean(currentRequest?.forceRefresh || nextRequest?.forceRefresh)
     };
   }
 
@@ -1020,37 +965,21 @@
     const scheduleDelay = Number.isFinite(delay) ? delay : 0;
     window.clearTimeout(state.scanTimer);
     state.scanTimer = window.setTimeout(() => {
-      void scanConversation(request.forceRender, request.forceRefresh, request.requireAI);
+      void scanConversation(request.forceRender, request.forceRefresh);
     }, scheduleDelay);
-  }
-
-  function setAIAnalysisBusy(isBusy) {
-    state.aiAnalysisInFlight = Boolean(isBusy);
-    updateBusyControls();
-    if (!isBusy) {
-      flushDeferredScan();
-    }
-    updateSummary(getVisibleLayout().length);
   }
 
   function getAdaptiveScanDelay(mutations) {
     const nodeCount = Math.max(0, Object.keys(state.tree.nodes || {}).length - 1);
-    const hasAIConfig = state.lastAIEntrySignatures.length > 0 || Boolean(state.lastAIFingerprint);
     const hasStructuralMutation = (mutations || []).some((mutation) => {
       return mutation.type === "childList" &&
         ((mutation.addedNodes && mutation.addedNodes.length) || (mutation.removedNodes && mutation.removedNodes.length));
     });
 
     if (hasStructuralMutation) {
-      if (hasAIConfig) {
-        return nodeCount > 24 ? SCAN_DEBOUNCE_MS_AI_LARGE_TREE : SCAN_DEBOUNCE_MS_AI;
-      }
       return nodeCount > 24 ? SCAN_DEBOUNCE_MS_LARGE_TREE : SCAN_DEBOUNCE_MS;
     }
 
-    if (hasAIConfig) {
-      return nodeCount > 24 ? 1800 : SCAN_DEBOUNCE_MS_AI;
-    }
     return nodeCount > 24 ? 1200 : SCAN_DEBOUNCE_MS;
   }
 
@@ -1062,10 +991,6 @@
     captureUndoState();
     resetPendingScanWork();
     resetTreeForAlgorithmRebuild();
-    state.lastAIFingerprint = "";
-    state.lastAIRelationships = [];
-    state.lastAITreeSnapshot = null;
-    state.lastAIEntrySignatures = [];
     saveTree();
     renderTree();
     updateBusyControls();
@@ -1106,15 +1031,14 @@
     state.lastScanFingerprint = "";
   }
 
-  async function scanConversation(forceRender, forceRefresh, requireAI) {
+  async function scanConversation(forceRender, forceRefresh) {
     if (state.workSuspended || isConversationClosed()) {
       return;
     }
     if (state.scanInFlight) {
       queueDeferredScan(0, {
         forceRender,
-        forceRefresh,
-        requireAI
+        forceRefresh
       });
       return;
     }
@@ -3211,8 +3135,7 @@
     );
     const total = Math.max(0, Object.keys(state.tree.nodes).length - 1) + deletedCount;
     const searchSuffix = state.tree.searchQuery ? " • 已筛选" : "";
-    const busySuffix = state.aiAnalysisInFlight ? " • AI 排序中..." : "";
-    state.summary.textContent = "已跟踪 " + total + " 个问题 • 当前可见 " + visibleCount + " 个问题 • 已删除 " + deletedCount + " 个问题" + searchSuffix + busySuffix;
+    state.summary.textContent = "已跟踪 " + total + " 个问题 • 当前可见 " + visibleCount + " 个问题 • 已删除 " + deletedCount + " 个问题" + searchSuffix;
     updateResultBadge();
   }
 
@@ -3242,7 +3165,6 @@
       state.deferredScanDelay = null;
       state.deferredScanRequest = null;
       state.scanInFlight = false;
-      state.aiAnalysisInFlight = false;
 
       if (state.observer) {
         state.observer.disconnect();
@@ -4063,54 +3985,6 @@
     const content = buildTreeMarkdown(state.exportMarkdownMode === "with-answers");
     await copyText(content);
     downloadBlob(new Blob([content], { type: mimeType }), buildExportFilename(extension));
-  }
-
-  async function loadSavedTreeBase() {
-    const chatKey = state.chatKey || getChatKey();
-    const cacheKey = "savedTree:" + chatKey;
-    try {
-      const result = await chrome.storage.local.get(cacheKey);
-      if (result && result[cacheKey]) {
-        state.savedTreeBase = result[cacheKey];
-      }
-    } catch (error) {
-      console.warn("ChatGPT Tree Panel: failed to load saved tree", error);
-    }
-  }
-
-  async function saveCurrentTreeAsBase() {
-    const chatKey = state.chatKey || getChatKey();
-    const relationships = [];
-    // 收集当前树的所有节点关系
-    for (const node of Object.values(state.tree.nodes)) {
-      if (node.id === state.tree.rootId) {
-        continue;
-      }
-      relationships.push({
-        nodeId: node.id,
-        parentId: node.parentId === state.tree.rootId ? null : node.parentId,
-        title: node.title || "",
-        promptIndex: typeof node.promptIndex === "number" ? node.promptIndex : -1,
-        signature: node.signature || "",
-        createdAt: node.createdAt || Date.now()
-      });
-    }
-    // 保存到chrome.storage.local
-    const cacheKey = "savedTree:" + chatKey;
-    const data = {
-      relationships,
-      savedAt: Date.now(),
-      entriesCount: relationships.length
-    };
-    try {
-      await chrome.storage.local.set({ [cacheKey]: data });
-      // 同时更新内存中的基础树
-      state.savedTreeBase = data;
-      window.alert("对话树已保存，以后以此为基础调整");
-    } catch (error) {
-      console.warn("ChatGPT Tree Panel: failed to save tree", error);
-      window.alert("保存失败");
-    }
   }
 
   function buildTreeMarkdown(includeAnswers) {
@@ -5041,19 +4915,6 @@
     rebuildChildren(state.tree);
     markTreeStructureDirty();
     updateSearchResults(false);
-    state.lastAIFingerprint = "";
-    state.lastAIRelationships = [];
-    state.lastAITreeSnapshot = null;
-    state.lastAIEntrySignatures = [];
-    if (state.savedTreeBase?.relationships?.length) {
-      state.savedTreeBase.relationships = state.savedTreeBase.relationships.filter((item) => {
-        if (item?.signature === signature) {
-          return false;
-        }
-        const itemTitle = normalizeIgnoredPromptTitle(item?.title || "");
-        return !normalizedTitle || itemTitle !== normalizedTitle;
-      });
-    }
     saveTree();
     renderTree();
 
@@ -5313,397 +5174,6 @@
 
   function buildSignature(text) {
     return normalizeText(text).toLowerCase().slice(0, 220);
-  }
-
-  async function analyzeEntriesWithAI(entries, fingerprint, forceRefresh, requireAI) {
-    if (!entries.length) {
-      state.lastAIFingerprint = "";
-      state.lastAIRelationships = [];
-      state.lastAITreeSnapshot = null;
-      state.lastAIEntrySignatures = [];
-      return entries;
-    }
-
-    if (!requireAI) {
-      return applySavedTreeHints(entries, state.savedTreeBase || null);
-    }
-
-    // 如果不是强制刷新，且指纹匹配且有缓存结果，则直接使用缓存
-    if (!forceRefresh && state.lastAIFingerprint === fingerprint && state.lastAIRelationships.length) {
-      return applyAIRelationships(entries, state.lastAIRelationships);
-    }
-
-    const aiPlan = buildAIAnalysisPlan(entries, forceRefresh);
-    const compactEntries = aiPlan.entries.map(compactAIEntry);
-    const previousTree = aiPlan.previousTree;
-    const savedTree = forceRefresh ? null : (state.savedTreeBase || null);
-    const prompt = buildRelationshipAnalysisPrompt(compactEntries, previousTree, savedTree);
-    const response = await callAI(prompt);
-
-    if (!response.ok || typeof response.text !== "string") {
-      if (requireAI) {
-        console.warn("ChatGPT Tree Panel: AI reorder failed, falling back to hard algorithm", response);
-      }
-      return entries;
-    }
-
-    let relationships = [];
-    try {
-      relationships = parseAIRelationships(response.text, compactEntries);
-    } catch (error) {
-      console.warn("ChatGPT Tree Panel: failed to parse AI relationships", error);
-      return entries;
-    }
-
-    if (!relationships.length) {
-      if (requireAI) {
-        console.warn("ChatGPT Tree Panel: AI returned no valid relationships, falling back to hard algorithm");
-      }
-      return entries;
-    }
-
-    const mergedRelationships = mergeAIRelationships(
-      state.lastAIRelationships,
-      relationships,
-      aiPlan.mutableQuestionIds,
-      entries.map((entry) => entry.analysisId)
-    );
-
-    state.lastAIFingerprint = fingerprint;
-    state.lastAIRelationships = mergedRelationships;
-    state.lastAIEntrySignatures = entries.map((entry) => entry.signature || "");
-    // 保存当前分析结果作为对话树快照，供下次分析使用
-    state.lastAITreeSnapshot = {
-      relationships: mergedRelationships.map((r) => ({
-        questionId: r.questionId,
-        parentId: r.parentId
-      })),
-      analyzedAt: Date.now(),
-      entriesCount: entries.length
-    };
-    return applyAIRelationships(entries, mergedRelationships);
-  }
-
-  function compactAIEntry(entry) {
-    return {
-      ...entry,
-      title: shorten(normalizeText(entry?.title || ""), AI_PROMPT_TITLE_LIMIT),
-      fullText: shorten(normalizeBlockText(entry?.fullText || entry?.title || ""), AI_PROMPT_BODY_LIMIT)
-    };
-  }
-
-  function buildAIAnalysisPlan(entries, forceRefresh) {
-    const fullPlan = {
-      entries,
-      previousTree: state.lastAITreeSnapshot || null,
-      mutableQuestionIds: entries.map((entry) => entry.analysisId)
-    };
-
-    if (forceRefresh || !state.lastAITreeSnapshot || !state.lastAIRelationships.length || !state.lastAIEntrySignatures.length) {
-      return fullPlan;
-    }
-
-    const currentSignatures = entries.map((entry) => entry.signature || "");
-    let commonPrefix = 0;
-    const maxPrefix = Math.min(currentSignatures.length, state.lastAIEntrySignatures.length);
-    while (commonPrefix < maxPrefix && currentSignatures[commonPrefix] === state.lastAIEntrySignatures[commonPrefix]) {
-      commonPrefix += 1;
-    }
-
-    const changedCount = entries.length - commonPrefix;
-    if (changedCount <= 0) {
-      return fullPlan;
-    }
-
-    let sliceStart = Math.max(0, commonPrefix - AI_INCREMENTAL_CONTEXT_COUNT);
-    if (entries.length - sliceStart > AI_INCREMENTAL_MAX_COUNT) {
-      sliceStart = Math.max(0, entries.length - AI_INCREMENTAL_MAX_COUNT);
-    }
-
-    const slicedEntries = entries.slice(sliceStart);
-    if (slicedEntries.length >= entries.length) {
-      return fullPlan;
-    }
-
-    const sliceQuestionIds = new Set(slicedEntries.map((entry) => entry.analysisId));
-    const previousTree = {
-      relationships: state.lastAIRelationships
-        .filter((relation) => sliceQuestionIds.has(relation.questionId))
-        .map((relation) => ({
-          questionId: relation.questionId,
-          parentId: sliceQuestionIds.has(relation.parentId) ? relation.parentId : null
-        }))
-    };
-
-    return {
-      entries: slicedEntries,
-      previousTree,
-      mutableQuestionIds: entries.slice(commonPrefix).map((entry) => entry.analysisId)
-    };
-  }
-
-  function mergeAIRelationships(baseRelationships, nextRelationships, mutableQuestionIds, validQuestionIds) {
-    const mutableSet = new Set(Array.isArray(mutableQuestionIds) ? mutableQuestionIds : []);
-    const validSet = new Set(Array.isArray(validQuestionIds) ? validQuestionIds : []);
-    const merged = [];
-    const seenQuestionIds = new Set();
-
-    for (const relation of Array.isArray(baseRelationships) ? baseRelationships : []) {
-      if (!relation?.questionId || mutableSet.has(relation.questionId) || !validSet.has(relation.questionId)) {
-        continue;
-      }
-      merged.push(relation);
-      seenQuestionIds.add(relation.questionId);
-    }
-
-    for (const relation of Array.isArray(nextRelationships) ? nextRelationships : []) {
-      if (!relation?.questionId || !mutableSet.has(relation.questionId) || !validSet.has(relation.questionId) || seenQuestionIds.has(relation.questionId)) {
-        continue;
-      }
-      merged.push(relation);
-      seenQuestionIds.add(relation.questionId);
-    }
-
-    return merged;
-  }
-
-  async function hasConfiguredApiKey() {
-    try {
-      const stored = await chrome.storage.local.get(["apiKey"]);
-      const apiKey = typeof stored.apiKey === "string" ? stored.apiKey.trim() : "";
-      return Boolean(apiKey);
-    } catch (error) {
-      console.warn("ChatGPT Tree Panel: failed to read API configuration", error);
-      return false;
-    }
-  }
-
-  function applySavedTreeHints(entries, savedTree) {
-    const relationships = Array.isArray(savedTree?.relationships) ? savedTree.relationships : [];
-    if (!entries.length || !relationships.length) {
-      return entries;
-    }
-
-    const savedParentSignatureMap = new Map();
-    const nodeIdToSignature = new Map();
-    for (const item of relationships) {
-      if (item?.nodeId && item?.signature) {
-        nodeIdToSignature.set(item.nodeId, item.signature);
-      }
-    }
-
-    for (const item of relationships) {
-      if (!item?.signature) {
-        continue;
-      }
-      let parentSignature = ROOT_PARENT_SIGNATURE;
-      if (typeof item.parentId === "string" && item.parentId) {
-        parentSignature = nodeIdToSignature.get(item.parentId) || "";
-      }
-      savedParentSignatureMap.set(item.signature, parentSignature);
-    }
-
-    const seenSignatures = new Set();
-    for (const entry of entries) {
-      const currentParentSignature = entry.parentSignature || "";
-      const savedParentSignature = savedParentSignatureMap.get(entry.signature);
-      const currentLooksWeak = !currentParentSignature || currentParentSignature === ROOT_PARENT_SIGNATURE;
-
-      // 只把保存树作为弱纠偏：当硬算法没有给出明确父节点时，再回退到已保存结构。
-      if (savedParentSignature !== undefined && currentLooksWeak) {
-        entry.parentSignature = savedParentSignature;
-      }
-      seenSignatures.add(entry.signature);
-    }
-
-    return entries;
-  }
-
-  function callAI(prompt) {
-    if (!chrome?.runtime?.sendMessage) {
-      return Promise.resolve({
-        ok: false,
-        reason: "runtime_unavailable"
-      });
-    }
-
-    return new Promise((resolve) => {
-      chrome.runtime.sendMessage({
-        type: "cgpt-tree:call-ai",
-        payload: {
-          prompt
-        }
-      }, (response) => {
-        if (chrome.runtime.lastError) {
-          console.warn("ChatGPT Tree Panel: AI message failed", chrome.runtime.lastError);
-          resolve({
-            ok: false,
-            reason: "runtime_error"
-          });
-          return;
-        }
-        resolve(response || {
-          ok: false,
-          reason: "empty_response"
-        });
-      });
-    });
-  }
-
-  function buildRelationshipAnalysisPrompt(entries, previousTree, savedTree) {
-    if (contentCore?.buildRelationshipAnalysisPrompt) {
-      return contentCore.buildRelationshipAnalysisPrompt(entries, previousTree, savedTree);
-    }
-    const conversationText = entries.map((entry) => {
-      return [
-        "问题ID: " + entry.analysisId,
-        "问题标题: " + entry.title,
-        "用户问题: " + entry.fullText
-      ].join("\n");
-    }).join("\n\n---\n\n");
-
-    let previousTreeText = "";
-    if (previousTree && previousTree.relationships && previousTree.relationships.length) {
-      const treeText = previousTree.relationships.map((r) => {
-        return r.questionId + " -> " + (r.parentId || "null");
-      }).join("\n");
-      previousTreeText = "\n\n上一次AI分析的对话树结构：\n" + treeText + "\n";
-    }
-
-    let savedTreeText = "";
-    if (savedTree && savedTree.relationships && savedTree.relationships.length) {
-      const savedText = buildSavedTreeReference(entries, savedTree);
-      if (savedText) {
-        savedTreeText = "\n\n用户保存的对话树结构（作为初始参考，可根据当前新问题语义调整）：\n" + savedText + "\n";
-      }
-    }
-
-    return [
-      "你是对话树结构分析器。请分析下面一组按时间顺序排列的对话。",
-      "目标：判断每个用户问题属于哪个上级问题，输出父子关系。",
-      "规则：",
-      "1. 只在提供的问题ID之间建立父子关系。",
-      "2. 如果某个问题是对上一个问题的继续追问、澄清、延伸、细化，则它的 parentId 应指向对应上级问题的 questionId。",
-      "3. 如果某个问题开启了新主题，parentId 设为 null。",
-      "4. 结果必须覆盖全部 questionId，且 questionId 不能指向自己。",
-      "5. 只输出 JSON，不要输出解释，不要包含 markdown 代码块标记。",
-      "6. 如果有用户保存的对话树结构，请将它作为初始参考，优先保持一致；但如果当前新增问题或当前语义表明关系应调整，可以修改已有父子关系。",
-      "7. 对于没有出现在保存树中的新问题，必须根据当前问题语义重新判断，不要机械沿用旧结构。",
-      "必须严格按照以下格式输出（version 固定为 1.0）：",
-      "{\"version\":\"1.0\",\"relationships\":[{\"questionId\":\"问题ID\",\"parentId\":\"父问题ID或null\"}]}",
-      "注意：parentId 为 null 时表示根节点，questionId 不能指向自己。",
-      savedTreeText,
-      previousTreeText,
-      conversationText
-    ].join("\n");
-  }
-
-  function buildSavedTreeReference(entries, savedTree) {
-    const relationships = Array.isArray(savedTree?.relationships) ? savedTree.relationships : [];
-    if (!entries.length || !relationships.length) {
-      return "";
-    }
-
-    const signatureToQuestionId = new Map();
-    for (const entry of entries) {
-      if (entry?.signature && entry?.analysisId) {
-        signatureToQuestionId.set(entry.signature, entry.analysisId);
-      }
-    }
-
-    const nodeIdToSignature = new Map();
-    for (const item of relationships) {
-      if (item?.nodeId && item?.signature) {
-        nodeIdToSignature.set(item.nodeId, item.signature);
-      }
-    }
-
-    const mappedRelationships = [];
-    for (const item of relationships) {
-      if (!item?.signature) {
-        continue;
-      }
-
-      const questionId = signatureToQuestionId.get(item.signature);
-      if (!questionId) {
-        continue;
-      }
-
-      let parentId = null;
-      if (typeof item.parentId === "string" && item.parentId) {
-        const parentSignature = nodeIdToSignature.get(item.parentId);
-        if (parentSignature) {
-          parentId = signatureToQuestionId.get(parentSignature) || null;
-        }
-      }
-
-      mappedRelationships.push(questionId + " -> " + (parentId || "null"));
-    }
-
-    return mappedRelationships.join("\n");
-  }
-
-  function parseAIRelationships(text, entries) {
-    if (contentCore?.parseAIRelationships) {
-      return contentCore.parseAIRelationships(text, entries);
-    }
-    const cleaned = text.replace(/^```json\s*/i, "").replace(/^```\s*/i, "").replace(/\s*```$/, "").trim();
-    const parsed = JSON.parse(cleaned);
-    // 验证版本号
-    const version = parsed?.version;
-    if (version !== "1.0" && version !== 1.0) {
-      console.warn("ChatGPT Tree Panel: AI response version mismatch, expected 1.0, got:", version);
-    }
-    const relationships = Array.isArray(parsed?.relationships) ? parsed.relationships : [];
-    const validIds = new Set(entries.map((entry) => entry.analysisId));
-
-    return relationships
-      .filter((item) => item && typeof item.questionId === "string" && validIds.has(item.questionId))
-      .map((item) => {
-        // 严格验证parentId：必须是字符串且在有效ID中，且不能是自己
-        const parentId = typeof item.parentId === "string" && validIds.has(item.parentId) && item.parentId !== item.questionId
-          ? item.parentId
-          : null;
-        return {
-          questionId: item.questionId,
-          parentId
-        };
-      });
-  }
-
-  function applyAIRelationships(entries, relationships) {
-    const questionMap = new Map(entries.map((entry) => [entry.analysisId, entry]));
-
-    for (const entry of entries) {
-      entry.parentSignature = entry.parentSignature || "";
-    }
-
-    for (const relation of relationships) {
-      const entry = questionMap.get(relation?.questionId);
-      if (!entry) {
-        continue;
-      }
-
-      if (!relation.parentId) {
-        entry.parentSignature = ROOT_PARENT_SIGNATURE;
-        continue;
-      }
-
-      const parentEntry = questionMap.get(relation.parentId);
-      if (!parentEntry || parentEntry === entry) {
-        continue;
-      }
-
-      const entryIndex = entries.indexOf(entry);
-      const parentIndex = entries.indexOf(parentEntry);
-      if (parentIndex < 0 || entryIndex < 0 || parentIndex >= entryIndex) {
-        continue;
-      }
-
-      entry.parentSignature = parentEntry.signature;
-    }
-
-    return entries;
   }
 
   function makeNodeId() {
