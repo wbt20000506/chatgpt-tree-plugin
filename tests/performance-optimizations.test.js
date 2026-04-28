@@ -174,6 +174,23 @@ function testSingleAttributeMarkerClearsOnlyPreviousElement() {
   assert.equal(marker.getCurrent(), null);
 }
 
+function testThemePreferenceHelpers() {
+  assert.equal(typeof contentCore.normalizeThemePreference, "function");
+  assert.equal(typeof contentCore.resolveThemeName, "function");
+
+  assert.equal(contentCore.normalizeThemePreference("system"), "system");
+  assert.equal(contentCore.normalizeThemePreference("light"), "light");
+  assert.equal(contentCore.normalizeThemePreference("dark"), "dark");
+  assert.equal(contentCore.normalizeThemePreference("bad-value"), "system");
+  assert.equal(contentCore.normalizeThemePreference(" DARK "), "dark");
+
+  assert.equal(contentCore.resolveThemeName("system", true), "dark");
+  assert.equal(contentCore.resolveThemeName("system", false), "light");
+  assert.equal(contentCore.resolveThemeName("light", true), "light");
+  assert.equal(contentCore.resolveThemeName("dark", false), "dark");
+  assert.equal(contentCore.resolveThemeName("bad-value", true), "dark");
+}
+
 function testClickPathAvoidsKnownFullDomScans() {
   const contentScript = fs.readFileSync(path.join(__dirname, "..", "content.js"), "utf8");
 
@@ -291,6 +308,7 @@ testCompactTreeSerialization();
 testDebugLoggerExport();
 testDebugLoggerRedactedExport();
 testSingleAttributeMarkerClearsOnlyPreviousElement();
+testThemePreferenceHelpers();
 testClickPathAvoidsKnownFullDomScans();
 testLongPlainAnswerUsesBoundedMatchText();
 testScanExtractionAvoidsFullDomClone();

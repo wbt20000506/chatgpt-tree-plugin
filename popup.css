@@ -1,24 +1,49 @@
 :root {
-  color-scheme: dark;
-  --popup-bg: #0b1118;
-  --popup-card: #121b25;
-  --popup-card-soft: rgba(255, 255, 255, 0.04);
-  --popup-text: #f3f8fb;
-  --popup-muted: #94a3b3;
-  --popup-border: rgba(255, 255, 255, 0.1);
-  --popup-good: #7ee081;
-  --popup-warn: #f7b955;
+  color-scheme: light;
+  --popup-bg: #f6f2e9;
+  --popup-surface: rgba(255, 253, 247, 0.96);
+  --popup-surface-soft: rgba(238, 248, 231, 0.78);
+  --popup-text: #34483e;
+  --popup-muted: #72806f;
+  --popup-border: rgba(126, 151, 111, 0.28);
+  --popup-good: #76ae68;
+  --popup-warn: #d79b54;
+  --popup-danger: #c7684b;
+  --popup-shadow: 0 18px 42px rgba(73, 92, 62, 0.16);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    color-scheme: dark;
+    --popup-bg: #151b19;
+    --popup-surface: rgba(31, 43, 38, 0.96);
+    --popup-surface-soft: rgba(228, 215, 181, 0.08);
+    --popup-text: #edf6e8;
+    --popup-muted: #aebda6;
+    --popup-border: rgba(205, 224, 191, 0.18);
+    --popup-good: #b4d99a;
+    --popup-warn: #e2b46e;
+    --popup-danger: #e08b73;
+    --popup-shadow: 0 18px 42px rgba(0, 0, 0, 0.3);
+  }
 }
 
 body {
   margin: 0;
   min-width: 320px;
   background:
-    radial-gradient(circle at top, rgba(88, 196, 220, 0.18), transparent 52%),
-    radial-gradient(circle at 80% 0%, rgba(247, 185, 85, 0.1), transparent 28%),
-    var(--popup-bg);
+    linear-gradient(135deg, rgba(255, 253, 247, 0.58), transparent 42%),
+    linear-gradient(180deg, var(--popup-bg), color-mix(in srgb, var(--popup-bg) 84%, #ffffff));
   color: var(--popup-text);
-  font: 14px/1.5 "SF Pro Display", "Segoe UI", ui-sans-serif, sans-serif;
+  font: 14px/1.5 "SF Pro Rounded", "Segoe UI", "PingFang SC", "Microsoft YaHei", ui-sans-serif, sans-serif;
+}
+
+@media (prefers-color-scheme: dark) {
+  body {
+    background:
+      linear-gradient(135deg, rgba(228, 215, 181, 0.08), transparent 42%),
+      linear-gradient(180deg, var(--popup-bg), #111514);
+  }
 }
 
 .popup {
@@ -28,11 +53,9 @@ body {
 .popup-card,
 .popup-note {
   border: 1px solid var(--popup-border);
-  border-radius: 28px;
-  background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.035), rgba(255, 255, 255, 0)),
-    rgba(18, 27, 37, 0.92);
-  box-shadow: 0 16px 36px rgba(0, 0, 0, 0.28);
+  border-radius: 24px;
+  background: var(--popup-surface);
+  box-shadow: var(--popup-shadow);
   backdrop-filter: blur(14px);
 }
 
@@ -43,7 +66,7 @@ body {
 .popup-eyebrow {
   color: var(--popup-muted);
   font-size: 11px;
-  letter-spacing: 0.08em;
+  letter-spacing: 0;
   text-transform: uppercase;
 }
 
@@ -55,7 +78,7 @@ h1 {
   margin: 0 0 6px;
   font-size: 20px;
   line-height: 1.15;
-  letter-spacing: -0.02em;
+  letter-spacing: 0;
 }
 
 .popup-subtitle,
@@ -80,7 +103,7 @@ h1 {
 .popup-status-label {
   color: var(--popup-muted);
   font-size: 11px;
-  letter-spacing: 0.08em;
+  letter-spacing: 0;
   text-transform: uppercase;
 }
 
@@ -91,30 +114,30 @@ h1 {
   padding: 0 9px;
   border-radius: 999px;
   border: 1px solid var(--popup-border);
-  background: rgba(255, 255, 255, 0.05);
+  background: var(--popup-surface-soft);
   color: var(--popup-muted);
   font-size: 11px;
-  font-weight: 600;
+  font-weight: 700;
 }
 
 .popup-status.is-open {
-  color: #def7e0;
-  border-color: rgba(126, 224, 129, 0.35);
-  background: rgba(126, 224, 129, 0.15);
+  color: var(--popup-good);
+  border-color: color-mix(in srgb, var(--popup-good) 42%, transparent);
+  background: color-mix(in srgb, var(--popup-good) 16%, transparent);
 }
 
 .popup-status.is-closed {
-  color: #fff0d4;
-  border-color: rgba(247, 185, 85, 0.35);
-  background: rgba(247, 185, 85, 0.15);
+  color: var(--popup-warn);
+  border-color: color-mix(in srgb, var(--popup-warn) 42%, transparent);
+  background: color-mix(in srgb, var(--popup-warn) 18%, transparent);
 }
 
 .popup-message-card {
   margin-top: 12px;
   padding: 12px 13px;
-  border-radius: 20px;
-  background: var(--popup-card-soft);
-  border: 1px solid rgba(255, 255, 255, 0.06);
+  border-radius: 18px;
+  background: var(--popup-surface-soft);
+  border: 1px solid var(--popup-border);
 }
 
 .popup-actions {
@@ -127,34 +150,40 @@ h1 {
 button {
   appearance: none;
   border: 1px solid var(--popup-border);
-  border-radius: 18px;
-  background: rgba(255, 255, 255, 0.06);
+  border-radius: 16px;
+  background: rgba(255, 255, 255, 0.52);
   color: var(--popup-text);
   padding: 8px 11px;
-  font: 13px/1.25 "SF Pro Display", "Segoe UI", ui-sans-serif, sans-serif;
-  font-weight: 600;
+  font: 13px/1.25 "SF Pro Rounded", "Segoe UI", "PingFang SC", ui-sans-serif, sans-serif;
+  font-weight: 700;
   cursor: pointer;
   transition: transform 120ms ease, background-color 120ms ease, box-shadow 120ms ease, opacity 120ms ease;
 }
 
+@media (prefers-color-scheme: dark) {
+  button {
+    background: rgba(255, 255, 255, 0.07);
+  }
+}
+
 button:hover {
-  background: rgba(255, 255, 255, 0.1);
+  background: var(--popup-surface-soft);
   transform: translateY(-1px);
+  box-shadow: 0 8px 18px rgba(73, 92, 62, 0.12);
 }
 
 button:active {
   transform: translateY(1px) scale(0.985);
-  background: rgba(255, 255, 255, 0.14);
 }
 
 button.is-busy {
-  box-shadow: 0 0 0 2px rgba(88, 196, 220, 0.12);
-  background: rgba(88, 196, 220, 0.12);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--popup-good) 20%, transparent);
+  background: color-mix(in srgb, var(--popup-good) 14%, transparent);
 }
 
 #enable-button {
-  background: rgba(126, 224, 129, 0.15);
-  border-color: rgba(126, 224, 129, 0.35);
+  background: color-mix(in srgb, var(--popup-good) 18%, transparent);
+  border-color: color-mix(in srgb, var(--popup-good) 42%, transparent);
 }
 
 .popup-note {
@@ -166,7 +195,7 @@ button.is-busy {
   display: block;
   margin-bottom: 8px;
   font-size: 12px;
-  letter-spacing: 0.08em;
+  letter-spacing: 0;
   text-transform: uppercase;
   color: var(--popup-muted);
 }

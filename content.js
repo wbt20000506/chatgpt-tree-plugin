@@ -6,6 +6,7 @@
   const CURRENT_ATTR = "data-cgpt-tree-current";
   const STORAGE_PREFIX = "cgpt_tree_state_v2:";
   const DISABLED_STORAGE_PREFIX = "cgpt_tree_disabled_v1:";
+  const THEME_STORAGE_KEY = "cgpt_tree_theme_preference_v1";
   const ROOT_PARENT_SIGNATURE = "__cgpt_tree_root__";
   const MAX_NODES = 180;
   const SCAN_DEBOUNCE_MS = 500;
@@ -118,6 +119,8 @@
     lastKnownUrl: location.href,
     exportFormat: "markdown",
     exportMarkdownMode: "with-answers",
+    themePreference: "system",
+    resolvedTheme: "light",
     undoSnapshot: null,
     drag: {
       sourceId: null,
@@ -219,6 +222,8 @@
     state.chatKey = getChatKey();
     state.tree = loadTree();
     state.lastSavedTreeFingerprint = getPersistedTreeFingerprint(state.tree);
+    state.themePreference = loadThemePreference();
+    state.resolvedTheme = resolveThemeName(state.themePreference, systemPrefersDark());
     logger?.info("boot", {
       href: location.href,
       siteType: state.siteType,
@@ -517,6 +522,11 @@
         '  <div class="cgpt-tree-header-top" data-role="panel-drag-handle">',
         '    <div class="cgpt-tree-title">',
         '      <div class="cgpt-tree-title-line"><strong>对话树</strong><span class="cgpt-tree-drag-hint">可拖动</span></div>',
+        '      <div class="cgpt-tree-theme-switch" data-role="theme-switch" role="group" aria-label="主题模式">',
+        '        <button type="button" data-role="theme-option" data-theme-value="system" title="跟随浏览器或系统主题">系统</button>',
+        '        <button type="button" data-role="theme-option" data-theme-value="light" title="使用浅色主题">浅色</button>',
+        '        <button type="button" data-role="theme-option" data-theme-value="dark" title="使用暗色主题">暗色</button>',
+        "      </div>",
         "    </div>",
         '    <div class="cgpt-tree-header-corner-actions">',
         '      <button type="button" class="cgpt-tree-toggle-button" data-role="toggle-close-menu">关闭</button>',
@@ -593,6 +603,7 @@
     state.closeMenu = panel.querySelector('[data-role="close-menu"]');
     panel.querySelector('[data-role="export-format"]').value = state.exportFormat;
     panel.hidden = false;
+    applyThemeState();
 
     bindPanelEvents();
     state.searchInput.value = state.tree.searchQuery || "";
@@ -622,6 +633,12 @@
     if (dragHandle) {
       dragHandle.addEventListener("pointerdown", beginPanelDrag);
     }
+
+    state.panel.querySelectorAll('[data-role="theme-option"]').forEach((button) => {
+      button.addEventListener("click", () => {
+        setThemePreference(button.getAttribute("data-theme-value"));
+      });
+    });
 
     bindClick("toggle", () => {
       state.tree.panelCollapsed = !state.tree.panelCollapsed;
@@ -819,6 +836,81 @@
     }
   }
 
+  function loadThemePreference() {
+    try {
+      return normalizeThemePreference(window.localStorage.getItem(THEME_STORAGE_KEY));
+    } catch (error) {
+      logger?.warn("theme-load-failed", error);
+      return "system";
+    }
+  }
+
+  function saveThemePreference(preference) {
+    try {
+      window.localStorage.setItem(THEME_STORAGE_KEY, normalizeThemePreference(preference));
+    } catch (error) {
+      logger?.warn("theme-save-failed", error);
+    }
+  }
+
+  function setThemePreference(preference) {
+    state.themePreference = normalizeThemePreference(preference);
+    saveThemePreference(state.themePreference);
+    applyThemeState();
+  }
+
+  function applyThemeState() {
+    state.themePreference = normalizeThemePreference(state.themePreference);
+    state.resolvedTheme = resolveThemeName(state.themePreference, systemPrefersDark());
+    if (!state.panel) {
+      return;
+    }
+    state.panel.setAttribute("data-theme", state.resolvedTheme);
+    state.panel.setAttribute("data-theme-preference", state.themePreference);
+    state.panel.querySelectorAll('[data-role="theme-option"]').forEach((button) => {
+      const selected = button.getAttribute("data-theme-value") === state.themePreference;
+      button.classList.toggle("is-selected", selected);
+      button.setAttribute("aria-pressed", selected ? "true" : "false");
+    });
+  }
+
+  function normalizeThemePreference(value) {
+    if (contentCore?.normalizeThemePreference) {
+      return contentCore.normalizeThemePreference(value);
+    }
+    const normalized = String(value || "system").trim().toLowerCase();
+    return normalized === "light" || normalized === "dark" || normalized === "system"
+      ? normalized
+      : "system";
+  }
+
+  function resolveThemeName(preference, prefersDark) {
+    if (contentCore?.resolveThemeName) {
+      return contentCore.resolveThemeName(preference, prefersDark);
+    }
+    const normalizedPreference = normalizeThemePreference(preference);
+    if (normalizedPreference === "light" || normalizedPreference === "dark") {
+      return normalizedPreference;
+    }
+    return prefersDark ? "dark" : "light";
+  }
+
+  function getThemeMediaQuery() {
+    if (typeof window.matchMedia !== "function") {
+      return null;
+    }
+    try {
+      return window.matchMedia("(prefers-color-scheme: dark)");
+    } catch (error) {
+      logger?.warn("theme-media-query-failed", error);
+      return null;
+    }
+  }
+
+  function systemPrefersDark() {
+    return Boolean(getThemeMediaQuery()?.matches);
+  }
+
   function bindGlobalWatchers() {
     const scheduleActiveViewportUpdate = () => {
       if (isConversationClosed()) {
@@ -855,6 +947,11 @@
         handleConversationChange();
       }
     };
+    const handleSystemThemeChange = () => {
+      if (state.themePreference === "system") {
+        applyThemeState();
+      }
+    };
 
     window.addEventListener("scroll", scheduleActiveViewportUpdate, { passive: true });
     addCleanup(() => window.removeEventListener("scroll", scheduleActiveViewportUpdate, { passive: true }));
@@ -873,6 +970,15 @@
 
     window.addEventListener("hashchange", handleHashChange);
     addCleanup(() => window.removeEventListener("hashchange", handleHashChange));
+
+    const themeMediaQuery = getThemeMediaQuery();
+    if (themeMediaQuery?.addEventListener) {
+      themeMediaQuery.addEventListener("change", handleSystemThemeChange);
+      addCleanup(() => themeMediaQuery.removeEventListener("change", handleSystemThemeChange));
+    } else if (themeMediaQuery?.addListener) {
+      themeMediaQuery.addListener(handleSystemThemeChange);
+      addCleanup(() => themeMediaQuery.removeListener(handleSystemThemeChange));
+    }
 
     state.urlTimer = window.setInterval(() => {
       if (location.href === state.lastKnownUrl) {
@@ -959,6 +1065,10 @@
         exists: Boolean(state.panel?.isConnected),
         hidden: Boolean(state.panel?.hidden),
         collapsed: Boolean(state.tree?.panelCollapsed)
+      },
+      theme: {
+        preference: state.themePreference,
+        resolved: state.resolvedTheme
       },
       scan: {
         inFlight: state.scanInFlight,

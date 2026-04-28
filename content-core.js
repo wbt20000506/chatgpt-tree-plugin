@@ -341,10 +341,27 @@
       : [];
   }
 
+  function normalizeThemePreference(value) {
+    const normalized = String(value || "system").trim().toLowerCase();
+    return normalized === "light" || normalized === "dark" || normalized === "system"
+      ? normalized
+      : "system";
+  }
+
+  function resolveThemeName(preference, systemPrefersDark) {
+    const normalizedPreference = normalizeThemePreference(preference);
+    if (normalizedPreference === "light" || normalizedPreference === "dark") {
+      return normalizedPreference;
+    }
+    return systemPrefersDark ? "dark" : "light";
+  }
+
   const api = {
     createDebugLogger,
     createSingleAttributeMarker,
     hasPersistedVolatileTreeData,
+    normalizeThemePreference,
+    resolveThemeName,
     serializeTreeForStorage
   };
 
