@@ -2,6 +2,19 @@
   "use strict";
 
   const ROOT_PARENT_SIGNATURE = "__cgpt_tree_root__";
+  const ANSWER_POINTS_CACHE_MAX = 320;
+  const ANSWER_MATCH_TEXT_MAX_CHARS = 2000;
+  const PARENT_MATCH_CANDIDATE_LIMIT = 12;
+  const ANSWER_POINT_MAX_COUNT = 32;
+  const ANSWER_POINT_TEXT_MAX_CHARS = 180;
+  const MATCH_VARIANT_MAX_CHARS = 160;
+  const answerPointsCache = new Map();
+  const diagnostics = {
+    answerPointsCacheHits: 0,
+    answerPointsCacheMisses: 0,
+    pointMatchCalls: 0,
+    pointScoreCalls: 0
+  };
 
   function extractPromptEntries(turns) {
     const entries = [];
@@ -10,11 +23,15 @@
 
     for (const turn of Array.isArray(turns) ? turns : []) {
       const role = turn?.role;
-      // Prefer assistant markdown so we can reliably detect headings/bold markers.
-      const rawText = role === "assistant"
-        ? (turn?.markdown || turn?.text || "")
-        : (turn?.text || "");
-      const text = normalizeBlockText(rawText);
+      const answerText = role === "assistant"
+        ? normalizeBlockText(turn?.text || turn?.markdown || "")
+        : "";
+      const matchSourceText = role === "assistant"
+        ? normalizeBlockText(turn?.matchText || turn?.markdown || answerText)
+        : "";
+      const text = role === "assistant"
+        ? answerText
+        : normalizeBlockText(turn?.text || "");
       if (!text) {
         continue;
       }
@@ -44,14 +61,15 @@
       if (role === "assistant" && currentPrompt) {
         currentPrompt.answer = normalizeBlockText([currentPrompt.answer, text].filter(Boolean).join("\n"));
 
-        const sketchPart = extractAnswerSketch(text);
+        const sketchPart = extractAnswerSketch(matchSourceText || text);
         if (sketchPart) {
           currentPrompt.answerSketch = normalizeBlockText([currentPrompt.answerSketch, sketchPart].filter(Boolean).join("\n"));
         }
 
-        // Only use compact sketch (bold lines + small headings) for algorithm/fingerprint.
-        const signatureSource = currentPrompt.answerSketch || currentPrompt.answer;
+        // Keep full answer for display/export, but only feed compact text into matching.
+        const signatureSource = buildAnswerMatchText(currentPrompt.answerSketch, matchSourceText || currentPrompt.answer);
         currentPrompt.answerSignature = buildSignature(signatureSource);
+        currentPrompt.answerMatchText = normalizeBlockText(signatureSource);
         if (!answeredPrompts.includes(currentPrompt)) {
           answeredPrompts.push(currentPrompt);
         }
@@ -61,7 +79,59 @@
     return entries;
   }
 
+  function buildAnswerMatchText(answerSketch, answerText) {
+    const sketch = normalizeBlockText(answerSketch);
+    if (sketch) {
+      return truncateMatchText(sketch);
+    }
+    return compactAnswerForMatch(answerText);
+  }
+
+  function compactAnswerForMatch(answerText) {
+    const text = normalizeBlockText(answerText);
+    if (text.length <= ANSWER_MATCH_TEXT_MAX_CHARS) {
+      return text;
+    }
+
+    const lines = text
+      .split(/\n+/)
+      .map((line) => normalizeText(line))
+      .filter(Boolean);
+    const picked = [];
+    let totalChars = 0;
+
+    const pushLine = (line) => {
+      if (!line || totalChars >= ANSWER_MATCH_TEXT_MAX_CHARS) {
+        return;
+      }
+      const remaining = ANSWER_MATCH_TEXT_MAX_CHARS - totalChars;
+      const value = line.length > remaining ? line.slice(0, remaining) : line;
+      picked.push(value);
+      totalChars += value.length + 1;
+    };
+
+    for (const line of lines) {
+      if (picked.length >= 18 || totalChars >= ANSWER_MATCH_TEXT_MAX_CHARS) {
+        break;
+      }
+      pushLine(line);
+    }
+
+    return truncateMatchText(picked.join("\n") || text);
+  }
+
+  function truncateMatchText(text) {
+    const normalized = normalizeBlockText(text);
+    if (normalized.length <= ANSWER_MATCH_TEXT_MAX_CHARS) {
+      return normalized;
+    }
+    return normalized.slice(0, ANSWER_MATCH_TEXT_MAX_CHARS).trim();
+  }
+
   function getCandidateAnswerForMatch(candidate) {
+    if (typeof candidate?.answerMatchText === "string") {
+      return candidate.answerMatchText;
+    }
     return normalizeBlockText(candidate?.answerSketch || candidate?.answer || "");
   }
 
@@ -71,9 +141,12 @@
     }
 
     let bestPointMatch = null;
+    const candidates = answeredPrompts.length > PARENT_MATCH_CANDIDATE_LIMIT
+      ? answeredPrompts.slice(-PARENT_MATCH_CANDIDATE_LIMIT)
+      : answeredPrompts;
 
-    for (let index = answeredPrompts.length - 1; index >= 0; index -= 1) {
-      const candidate = answeredPrompts[index];
+    for (let index = candidates.length - 1; index >= 0; index -= 1) {
+      const candidate = candidates[index];
       const candidateAnswer = getCandidateAnswerForMatch(candidate);
       if (!candidateAnswer) {
         continue;
@@ -84,7 +157,7 @@
         continue;
       }
 
-      const distance = answeredPrompts.length - 1 - index;
+      const distance = candidates.length - 1 - index;
       const recencyBonus = Math.max(0, 4 - distance);
       const score = pointMatch.score + recencyBonus;
       if (!bestPointMatch || score > bestPointMatch.score) {
@@ -172,13 +245,16 @@
   }
 
   function matchPromptToAnswerPoint(promptText, answerText) {
-    const points = extractAnswerPoints(answerText);
+    diagnostics.pointMatchCalls += 1;
+    const points = getCachedAnswerPoints(answerText);
     if (!points.length) {
       return null;
     }
 
-    const promptVariants = buildPromptMatchVariants(promptText);
-    if (!promptVariants.length) {
+    const promptProfiles = buildPromptMatchVariants(promptText)
+      .map((variant) => buildPromptProfile(variant))
+      .filter((profile) => profile.compact);
+    if (!promptProfiles.length) {
       return null;
     }
 
@@ -186,10 +262,13 @@
 
     for (const point of points) {
       let score = 0;
+      const pointProfiles = point.variantProfiles || point.variants.map((variant) => buildMatchProfile(variant));
+      const headProfile = point.headProfile || buildMatchProfile(point.head);
 
-      for (const promptVariant of promptVariants) {
-        for (const pointVariant of point.variants) {
-          score = Math.max(score, scorePromptPointMatch(promptVariant, point.head, pointVariant, point.context));
+      for (const promptProfile of promptProfiles) {
+        for (const pointProfile of pointProfiles) {
+          diagnostics.pointScoreCalls += 1;
+          score = Math.max(score, scorePromptPointProfileMatch(promptProfile, headProfile, pointProfile));
         }
       }
 
@@ -204,6 +283,39 @@
     }
 
     return bestMatch;
+  }
+
+  function getCachedAnswerPoints(answerText) {
+    const text = normalizeBlockText(answerText);
+    if (!text) {
+      return [];
+    }
+    const key = buildAnswerPointsCacheKey(text);
+    if (answerPointsCache.has(key)) {
+      diagnostics.answerPointsCacheHits += 1;
+      const cached = answerPointsCache.get(key);
+      answerPointsCache.delete(key);
+      answerPointsCache.set(key, cached);
+      return cached;
+    }
+
+    diagnostics.answerPointsCacheMisses += 1;
+    const points = extractAnswerPoints(text);
+    answerPointsCache.set(key, points);
+    while (answerPointsCache.size > ANSWER_POINTS_CACHE_MAX) {
+      const oldestKey = answerPointsCache.keys().next().value;
+      answerPointsCache.delete(oldestKey);
+    }
+    return points;
+  }
+
+  function buildAnswerPointsCacheKey(text) {
+    const normalized = normalizeBlockText(text);
+    let hash = 5381;
+    for (let index = 0; index < normalized.length; index += 1) {
+      hash = ((hash << 5) + hash) ^ normalized.charCodeAt(index);
+    }
+    return normalized.length + ":" + (hash >>> 0).toString(36);
   }
 
   function extractAnswerPoints(answerText) {
@@ -230,22 +342,30 @@
     let currentContext = "";
 
     const pushPointEntry = (pointText, contextText) => {
-      const normalizedPoint = normalizeForMatch(pointText);
+      if (points.length >= ANSWER_POINT_MAX_COUNT) {
+        return;
+      }
+      const compactPointText = compactAnswerPointText(pointText);
+      const normalizedPoint = normalizeForMatch(compactPointText);
       if (!normalizedPoint || seen.has(normalizedPoint)) {
         return;
       }
 
-      const head = extractPointHead(pointText);
+      const head = extractPointHead(compactPointText);
       if (!head) {
         return;
       }
 
+      const context = shorten(normalizeText(contextText || ""), 60);
+      const variants = buildPointMatchVariants(compactPointText, head, context);
       seen.add(normalizedPoint);
       points.push({
-        text: pointText,
+        text: compactPointText,
         head,
-        context: contextText || "",
-        variants: buildPointMatchVariants(pointText, head, contextText)
+        context,
+        variants,
+        variantProfiles: variants.map((variant) => buildPointVariantProfile(variant)),
+        headProfile: buildPointVariantProfile(head)
       });
     };
 
@@ -269,6 +389,9 @@
     };
 
     for (const line of lines) {
+      if (points.length >= ANSWER_POINT_MAX_COUNT) {
+        break;
+      }
       const inlinePoints = extractInlinePoints(line);
       if (inlinePoints.length) {
         pushPoint();
@@ -290,12 +413,32 @@
         continue;
       }
 
-      currentPoint = normalizeText(currentPoint + " " + stripContinuationPrefix(line));
+      currentPoint = compactAnswerPointText(currentPoint + " " + stripContinuationPrefix(line));
       currentContext = extractPointContext(currentPoint);
     }
 
     pushPoint();
     return points;
+  }
+
+  function compactAnswerPointText(text) {
+    const normalized = cleanupPointText(text);
+    if (normalized.length <= ANSWER_POINT_TEXT_MAX_CHARS) {
+      return normalized;
+    }
+
+    const sentenceParts = normalized.split(/(?<=[。！？!?；;])\s*/).filter(Boolean);
+    const picked = [];
+    let totalChars = 0;
+    for (const part of sentenceParts) {
+      if (!part || totalChars + part.length > ANSWER_POINT_TEXT_MAX_CHARS) {
+        break;
+      }
+      picked.push(part);
+      totalChars += part.length;
+    }
+    const compact = picked.join("") || normalized;
+    return compact.slice(0, ANSWER_POINT_TEXT_MAX_CHARS).trim();
   }
 
   function extractPointText(line) {
@@ -403,31 +546,34 @@
     ];
 
     return Array.from(new Set(variants
-      .map((item) => stripQuestionSuffix(normalizeForMatch(item)))
+      .map((item) => truncateMatchVariant(stripQuestionSuffix(normalizeForMatch(item))))
       .filter((item) => item && item.length >= 2)));
   }
 
-  function scorePromptPointMatch(promptText, headText, pointText, contextText) {
-    const promptCore = stripPromptIntent(promptText) || promptText;
-    const pointCore = stripQuestionSuffix(pointText) || pointText;
-    const headCore = stripQuestionSuffix(normalizeForMatch(headText)) || normalizeForMatch(headText);
-    const contextCore = stripQuestionSuffix(normalizeForMatch(contextText)) || normalizeForMatch(contextText);
+  function truncateMatchVariant(text) {
+    const normalized = normalizeText(text);
+    if (normalized.length <= MATCH_VARIANT_MAX_CHARS) {
+      return normalized;
+    }
+    return normalized.slice(0, MATCH_VARIANT_MAX_CHARS).trim();
+  }
+
+  function scorePromptPointProfileMatch(promptProfile, headProfile, pointProfile) {
+    const promptCoreProfile = promptProfile.coreProfile || buildMatchProfile(stripPromptIntent(promptProfile.normalized) || promptProfile.normalized);
+    const pointCoreProfile = pointProfile.coreProfile || buildMatchProfile(stripQuestionSuffix(pointProfile.normalized) || pointProfile.normalized);
+    const headCoreProfile = headProfile.coreProfile || buildMatchProfile(stripQuestionSuffix(headProfile.normalized) || headProfile.normalized);
     let score = Math.max(
-      getTextSimilarityScore(promptCore, pointCore) + 4,
-      getTextSimilarityScore(promptCore, headCore) + 2
+      getProfileSimilarityScore(promptCoreProfile, pointCoreProfile) + 4,
+      getProfileSimilarityScore(promptCoreProfile, headCoreProfile) + 2
     );
 
-    if (contextCore) {
-      score = Math.max(score, getTextSimilarityScore(promptCore, contextCore + " " + pointCore));
-    }
-
-    if (compactMatchText(promptCore) === compactMatchText(headCore)) {
+    if (promptCoreProfile.compact === headCoreProfile.compact) {
       score += 18;
     }
-    if (compactMatchText(pointCore).includes(compactMatchText(promptCore))) {
-      score += Math.min(12, compactMatchText(promptCore).length * 2);
+    if (pointCoreProfile.compact.includes(promptCoreProfile.compact)) {
+      score += Math.min(12, promptCoreProfile.compact.length * 2);
     }
-    if (isGenericPointHead(headCore)) {
+    if (isGenericPointHead(headCoreProfile.normalized)) {
       score -= 6;
     }
 
@@ -527,7 +673,10 @@
   }
 
   function extractMatchTokens(text) {
-    const normalized = normalizeForMatch(text);
+    return extractMatchTokensFromNormalized(normalizeForMatch(text));
+  }
+
+  function extractMatchTokensFromNormalized(normalized) {
     if (!normalized) {
       return [];
     }
@@ -554,31 +703,103 @@
   }
 
   function getTextSimilarityScore(left, right) {
-    if (!left || !right) {
-      return 0;
-    }
+    return getProfileSimilarityScore(buildMatchProfile(left), buildMatchProfile(right));
+  }
 
-    const compactLeft = compactMatchText(left);
-    const compactRight = compactMatchText(right);
-    if (!compactLeft || !compactRight) {
+  function getProfileSimilarityScore(leftProfile, rightProfile) {
+    if (!leftProfile.compact || !rightProfile.compact) {
       return 0;
     }
 
     let score = 0;
 
-    if (compactLeft === compactRight) {
+    if (leftProfile.compact === rightProfile.compact) {
       score = Math.max(score, 90);
-    } else if (compactLeft.includes(compactRight) || compactRight.includes(compactLeft)) {
-      score = Math.max(score, 58 + Math.min(compactLeft.length, compactRight.length));
+    } else if (leftProfile.compact.includes(rightProfile.compact) || rightProfile.compact.includes(leftProfile.compact)) {
+      score = Math.max(score, 58 + Math.min(leftProfile.compact.length, rightProfile.compact.length));
     }
 
-    const overlap = getTokenOverlapScore(left, right);
-    const coverage = getTokenCoverageScore(left, right);
-    const ngramScore = getCharacterNGramScore(left, right);
-    const lcsScore = getLongestCommonSubstringScore(left, right);
+    const overlap = getProfileTokenOverlapScore(leftProfile, rightProfile);
+    const coverage = getProfileTokenCoverageScore(leftProfile, rightProfile);
+    const ngramScore = getProfileNGramScore(leftProfile, rightProfile);
 
-    score = Math.max(score, overlap + coverage + ngramScore + lcsScore);
+    score = Math.max(score, overlap + coverage + ngramScore);
     return score;
+  }
+
+  function buildMatchProfile(text) {
+    const normalized = normalizeForMatch(text);
+    const compact = normalized.replace(/\s+/g, "");
+    const tokens = extractMatchTokensFromNormalized(normalized);
+    const ngrams = extractCharacterNGramsFromCompact(compact);
+    return {
+      normalized,
+      compact,
+      tokens,
+      tokenSet: new Set(tokens),
+      ngrams,
+      ngramSet: new Set(ngrams)
+    };
+  }
+
+  function buildPromptProfile(text) {
+    const profile = buildMatchProfile(text);
+    profile.coreProfile = buildMatchProfile(stripPromptIntent(profile.normalized) || profile.normalized);
+    return profile;
+  }
+
+  function buildPointVariantProfile(text) {
+    const profile = buildMatchProfile(text);
+    profile.coreProfile = buildMatchProfile(stripQuestionSuffix(profile.normalized) || profile.normalized);
+    return profile;
+  }
+
+  function getProfileTokenOverlapScore(leftProfile, rightProfile) {
+    if (!leftProfile.tokens.length || !rightProfile.tokenSet.size) {
+      return 0;
+    }
+
+    let score = 0;
+    for (const token of leftProfile.tokens) {
+      if (token.length < 2) {
+        continue;
+      }
+      if (rightProfile.tokenSet.has(token)) {
+        score += token.length >= 4 ? 4 : 2;
+      }
+    }
+    return score;
+  }
+
+  function getProfileTokenCoverageScore(leftProfile, rightProfile) {
+    const leftTokens = leftProfile.tokens.filter((token) => token.length >= 2);
+    if (!leftTokens.length || !rightProfile.tokenSet.size) {
+      return 0;
+    }
+
+    let matched = 0;
+    for (const token of leftTokens) {
+      if (rightProfile.tokenSet.has(token)) {
+        matched += 1;
+      }
+    }
+
+    return Math.round((matched / leftTokens.length) * 16);
+  }
+
+  function getProfileNGramScore(leftProfile, rightProfile) {
+    if (!leftProfile.ngrams.length || !rightProfile.ngramSet.size) {
+      return 0;
+    }
+
+    let matched = 0;
+    for (const gram of leftProfile.ngrams) {
+      if (rightProfile.ngramSet.has(gram)) {
+        matched += 1;
+      }
+    }
+
+    return Math.round((2 * matched / (leftProfile.ngrams.length + rightProfile.ngrams.length)) * 18);
   }
 
   function getCharacterNGramScore(left, right) {
@@ -600,7 +821,10 @@
   }
 
   function extractCharacterNGrams(text) {
-    const compact = compactMatchText(text);
+    return extractCharacterNGramsFromCompact(compactMatchText(text));
+  }
+
+  function extractCharacterNGramsFromCompact(compact) {
     if (!compact) {
       return [];
     }
@@ -627,23 +851,22 @@
       return 0;
     }
 
-    let longest = 0;
-    for (let leftIndex = 0; leftIndex < compactLeft.length; leftIndex += 1) {
-      for (let rightIndex = 0; rightIndex < compactRight.length; rightIndex += 1) {
-        let matched = 0;
-        while (
-          compactLeft[leftIndex + matched] &&
-          compactLeft[leftIndex + matched] === compactRight[rightIndex + matched]
-        ) {
-          matched += 1;
-        }
-        if (matched > longest) {
-          longest = matched;
+    if (compactLeft.includes(compactRight) || compactRight.includes(compactLeft)) {
+      return 16;
+    }
+
+    const shorter = compactLeft.length <= compactRight.length ? compactLeft : compactRight;
+    const longer = compactLeft.length <= compactRight.length ? compactRight : compactLeft;
+    const maxSize = Math.min(shorter.length, 24);
+    for (let size = maxSize; size >= 2; size -= 1) {
+      for (let index = 0; index <= shorter.length - size; index += 1) {
+        if (longer.includes(shorter.slice(index, index + size))) {
+          return Math.round((size / Math.max(1, Math.min(compactLeft.length, compactRight.length))) * 16);
         }
       }
     }
 
-    return Math.round((longest / Math.max(1, Math.min(compactLeft.length, compactRight.length))) * 16);
+    return 0;
   }
 
   function shouldAppendToPoint(line) {
@@ -827,6 +1050,26 @@
     return normalizeText(text).toLowerCase().slice(0, 220);
   }
 
+  function getDiagnostics() {
+    return {
+      answerPointsCache: {
+        size: answerPointsCache.size,
+        hits: diagnostics.answerPointsCacheHits,
+        misses: diagnostics.answerPointsCacheMisses
+      },
+      pointMatchCalls: diagnostics.pointMatchCalls,
+      pointScoreCalls: diagnostics.pointScoreCalls
+    };
+  }
+
+  function resetDiagnostics() {
+    answerPointsCache.clear();
+    diagnostics.answerPointsCacheHits = 0;
+    diagnostics.answerPointsCacheMisses = 0;
+    diagnostics.pointMatchCalls = 0;
+    diagnostics.pointScoreCalls = 0;
+  }
+
   const api = {
     ROOT_PARENT_SIGNATURE,
     buildSignature,
@@ -834,9 +1077,11 @@
     extractPromptEntries,
     findPromptContinuationParent,
     findPromptParentMatch,
+    getDiagnostics,
     matchPromptToAnswerPoint,
     normalizeBlockText,
-    normalizeText
+    normalizeText,
+    resetDiagnostics
   };
 
   globalScope.CGPTTreeHardAlgorithm = api;

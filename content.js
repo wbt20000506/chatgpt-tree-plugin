@@ -21,6 +21,8 @@
   const NODE_INDENT = 26;
   const SCROLL_PADDING = 20;
   const GITHUB_COPILOT_TOP_BUFFER = 144;
+  const TOP_OVERLAY_CACHE_TTL_MS = 1500;
+  const ASSISTANT_MATCH_TEXT_MAX_CHARS = 4000;
   const SCROLL_CORRECTION_DELAY_MS = 180;
   const SCROLL_CORRECTION_MAX_ATTEMPTS = 2;
   const MANUAL_ACTIVE_NODE_HOLD_MS = 1600;
@@ -56,13 +58,19 @@
   });
   const hardAlgorithm = globalThis.CGPTTreeHardAlgorithm || null;
   const contentCore = globalThis.CGPTTreeContentCore || null;
+  const logger = contentCore?.createDebugLogger
+    ? contentCore.createDebugLogger({ source: "content", maxEntries: 500 })
+    : null;
+  const activeHighlightMarker = contentCore?.createSingleAttributeMarker
+    ? contentCore.createSingleAttributeMarker(CURRENT_ATTR)
+    : null;
 
   function debugLog(eventName, payload) {
-    try {
-      console.log("[CGPT-TREE]", eventName, payload || {});
-    } catch (error) {
-      console.log("[CGPT-TREE]", eventName);
+    if (logger) {
+      logger.debug(eventName, payload || {});
+      return;
     }
+    console.log("[CGPT-TREE]", eventName, payload || {});
   }
 
   const state = {
@@ -73,6 +81,8 @@
     searchIndex: -1,
     searchDraft: "",
     domNodeMap: new Map(),
+    turnTextCache: new WeakMap(),
+    assistantMarkdownCache: new WeakMap(),
     panel: null,
     body: null,
     searchInput: null,
@@ -97,6 +107,13 @@
     treeStructureVersion: 0,
     lastScanFingerprint: "",
     lastSavedTreeFingerprint: "",
+    needsStorageCompaction: false,
+    highlightedPromptEl: null,
+    topOverlayCache: {
+      value: 0,
+      measuredAt: 0,
+      viewportWidth: 0
+    },
     scanRequestId: 0,
     lastKnownUrl: location.href,
     exportFormat: "markdown",
@@ -158,7 +175,8 @@
       hasPanel: Boolean(document.getElementById(PANEL_ID)),
       scanInFlight: state.scanInFlight,
       scanDueAt: state.scanDueAt || 0,
-      lastScanStartedAt: state.lastScanStartedAt || 0
+      lastScanStartedAt: state.lastScanStartedAt || 0,
+      logCount: logger?.getEntries?.().length || 0
     })
   };
 
@@ -181,6 +199,7 @@
         node.remove();
       }
     });
+    clearActiveHighlight();
     state.panel = null;
     state.body = null;
     state.searchInput = null;
@@ -199,12 +218,22 @@
     state.siteType = detectSiteType();
     state.chatKey = getChatKey();
     state.tree = loadTree();
-    state.lastSavedTreeFingerprint = JSON.stringify(state.tree);
+    state.lastSavedTreeFingerprint = getPersistedTreeFingerprint(state.tree);
+    logger?.info("boot", {
+      href: location.href,
+      siteType: state.siteType,
+      chatKey: state.chatKey,
+      supported: isSupportedConversationRoute(state.siteType)
+    });
     bindRuntimeMessages();
     bindGlobalWatchers();
     void syncConversationClosedState();
     if (!isSupportedConversationRoute(state.siteType)) {
       setConversationWorkSuspended(true);
+      logger?.info("boot-suspended-route", {
+        href: location.href,
+        siteType: state.siteType
+      });
       return;
     }
     ensurePanel();
@@ -253,6 +282,7 @@
     }
     state.hoverTooltipEl = null;
     restoreSuppressedNativeTooltips();
+    clearActiveHighlight();
 
     const panel = document.getElementById(PANEL_ID);
     if (panel) {
@@ -315,6 +345,7 @@
   }
 
   function loadTree() {
+    state.needsStorageCompaction = false;
     if (!shouldPersistTreeState()) {
       return createTree();
     }
@@ -323,8 +354,14 @@
       if (!raw) {
         return createTree();
       }
-      return normalizeTree(JSON.parse(raw));
+      const parsed = JSON.parse(raw);
+      const tree = normalizeTree(parsed);
+      if (hasPersistedVolatileTreeData(parsed)) {
+        state.needsStorageCompaction = true;
+      }
+      return tree;
     } catch (error) {
+      logger?.warn("tree-load-failed", error);
       console.warn("ChatGPT Tree Panel: failed to load tree state", error);
       return createTree();
     }
@@ -342,16 +379,49 @@
     if (!shouldPersistTreeState()) {
       return;
     }
-    const fingerprint = JSON.stringify(state.tree);
-    if (fingerprint === state.lastSavedTreeFingerprint) {
+    const persistedTree = serializeTreeForStorage(state.tree);
+    const fingerprint = JSON.stringify(persistedTree);
+    if (fingerprint === state.lastSavedTreeFingerprint && !state.needsStorageCompaction) {
       return;
     }
     try {
       window.localStorage.setItem(getStorageKey(), fingerprint);
       state.lastSavedTreeFingerprint = fingerprint;
+      state.needsStorageCompaction = false;
     } catch (error) {
+      logger?.warn("tree-save-failed", error);
       console.warn("ChatGPT Tree Panel: failed to save tree state", error);
     }
+  }
+
+  function getPersistedTreeFingerprint(tree) {
+    return JSON.stringify(serializeTreeForStorage(tree));
+  }
+
+  function serializeTreeForStorage(tree) {
+    if (contentCore?.serializeTreeForStorage) {
+      return contentCore.serializeTreeForStorage(tree);
+    }
+    const output = JSON.parse(JSON.stringify(tree || createTree()));
+    for (const node of Object.values(output.nodes || {})) {
+      delete node.answer;
+      delete node.updatedAt;
+      delete node.lastSeenAt;
+    }
+    return output;
+  }
+
+  function hasPersistedVolatileTreeData(input) {
+    if (contentCore?.hasPersistedVolatileTreeData) {
+      return contentCore.hasPersistedVolatileTreeData(input);
+    }
+    return Object.values(input?.nodes || {}).some((node) => {
+      return node && (
+        (typeof node.answer === "string" && node.answer) ||
+        Object.prototype.hasOwnProperty.call(node, "updatedAt") ||
+        Object.prototype.hasOwnProperty.call(node, "lastSeenAt")
+      );
+    });
   }
 
   function normalizeTree(input) {
@@ -764,6 +834,7 @@
       if (!state.panel || !isSupportedConversationRoute(state.siteType)) {
         return;
       }
+      resetTopOverlayCache();
       clampStoredPanelPosition();
       window.clearTimeout(state.activeTimer);
       state.activeTimer = window.setTimeout(() => renderTree(), ACTIVE_DEBOUNCE_MS);
@@ -821,6 +892,23 @@
         void getConversationStatusPayload().then((payload) => sendResponse(payload));
         return true;
       }
+      if (message?.type === "cgpt-tree-get-debug-log") {
+        sendResponse({
+          ok: true,
+          text: getDebugLogText()
+        });
+        return false;
+      }
+      if (message?.type === "cgpt-tree-clear-debug-log") {
+        logger?.clear?.();
+        logger?.info("debug-log-cleared", {
+          href: location.href
+        });
+        sendResponse({
+          ok: true
+        });
+        return false;
+      }
       if (message?.type === "cgpt-tree-set-conversation-status") {
         void setConversationClosedMode(message.mode || "open")
           .then(() => getConversationStatusPayload())
@@ -831,6 +919,60 @@
     };
     chrome.runtime.onMessage.addListener(listener);
     addCleanup(() => chrome.runtime.onMessage.removeListener(listener));
+  }
+
+  function getDebugLogText() {
+    if (!logger?.exportText) {
+      return JSON.stringify(buildDebugDiagnostics(), null, 2);
+    }
+    logger.info("debug-log-exported", {
+      href: location.href
+    });
+    return logger.exportText({
+      redact: true,
+      diagnostics: buildDebugDiagnostics()
+    });
+  }
+
+  function buildDebugDiagnostics() {
+    const nodeCount = Math.max(0, Object.keys(state.tree?.nodes || {}).length - 1);
+    return {
+      href: location.href,
+      title: document.title || "",
+      userAgent: navigator.userAgent || "",
+      viewport: {
+        width: window.innerWidth,
+        height: window.innerHeight,
+        scrollY: window.scrollY
+      },
+      siteType: state.siteType,
+      chatKey: state.chatKey,
+      supportedRoute: isSupportedConversationRoute(state.siteType),
+      workSuspended: state.workSuspended,
+      closed: isConversationClosed(),
+      closeStateLoaded: state.closeStateLoaded,
+      nodeCount,
+      activeNodeId: state.activeNodeId || "",
+      searchQuery: state.tree?.searchQuery || "",
+      searchResultCount: state.searchResults.length,
+      panel: {
+        exists: Boolean(state.panel?.isConnected),
+        hidden: Boolean(state.panel?.hidden),
+        collapsed: Boolean(state.tree?.panelCollapsed)
+      },
+      scan: {
+        inFlight: state.scanInFlight,
+        dueAt: state.scanDueAt || 0,
+        lastStartedAt: state.lastScanStartedAt || 0,
+        lastFingerprintLength: String(state.lastScanFingerprint || "").length
+      },
+      storage: {
+        shouldPersist: shouldPersistTreeState(),
+        needsCompaction: state.needsStorageCompaction,
+        lastFingerprintLength: String(state.lastSavedTreeFingerprint || "").length
+      },
+      hardAlgorithm: hardAlgorithm?.getDiagnostics ? hardAlgorithm.getDiagnostics() : null
+    };
   }
 
   function observeConversation() {
@@ -857,10 +999,18 @@
 
   function handleConversationChange() {
     resetScanState();
+    resetTopOverlayCache();
+    clearActiveHighlight();
     state.siteType = detectSiteType();
     state.chatKey = getChatKey();
     state.tree = loadTree();
-    state.lastSavedTreeFingerprint = JSON.stringify(state.tree);
+    state.lastSavedTreeFingerprint = getPersistedTreeFingerprint(state.tree);
+    logger?.info("conversation-change", {
+      href: location.href,
+      siteType: state.siteType,
+      chatKey: state.chatKey,
+      supported: isSupportedConversationRoute(state.siteType)
+    });
 
     if (!isSupportedConversationRoute(state.siteType)) {
       setConversationWorkSuspended(true);
@@ -872,6 +1022,8 @@
     setConversationWorkSuspended(false);
     state.activeNodeId = null;
     state.domNodeMap.clear();
+    state.turnTextCache = new WeakMap();
+    state.assistantMarkdownCache = new WeakMap();
     state.lastScanFingerprint = "";
     state.renderedFingerprint = "";
     state.isConversationTemporarilyClosed = false;
@@ -1033,6 +1185,10 @@
 
   async function scanConversation(forceRender, forceRefresh) {
     if (state.workSuspended || isConversationClosed()) {
+      logger?.debug("scan-skipped-suspended", {
+        workSuspended: state.workSuspended,
+        closed: isConversationClosed()
+      });
       return;
     }
     if (state.scanInFlight) {
@@ -1046,10 +1202,21 @@
     state.scanInFlight = true;
     updateBusyControls();
     const scanRequestId = ++state.scanRequestId;
+    const scanStartedAt = performance.now();
+    const phaseDurations = {};
+    let entriesCount = 0;
+    let skippedUnchanged = false;
     try {
-      const entries = filterIgnoredEntries(extractPromptEntries());
+      const rawEntries = extractPromptEntries(phaseDurations);
+      const filterStartedAt = performance.now();
+      const entries = filterIgnoredEntries(rawEntries);
+      phaseDurations.filterMs = Math.round(performance.now() - filterStartedAt);
+      entriesCount = entries.length;
+      const fingerprintStartedAt = performance.now();
       const fingerprint = JSON.stringify(entries.map((entry) => [entry.analysisId, entry.signature, entry.answerSignature]));
+      phaseDurations.fingerprintMs = Math.round(performance.now() - fingerprintStartedAt);
       if (!forceRender && !forceRefresh && fingerprint === state.lastScanFingerprint) {
+        skippedUnchanged = true;
         updateActiveNodeFromViewport();
         return;
       }
@@ -1058,24 +1225,56 @@
       if (scanRequestId !== state.scanRequestId) {
         return;
       }
+      const syncStartedAt = performance.now();
       syncTree(entries);
+      phaseDurations.syncMs = Math.round(performance.now() - syncStartedAt);
+      const searchStartedAt = performance.now();
       updateSearchResults(false);
+      phaseDurations.searchMs = Math.round(performance.now() - searchStartedAt);
+      const activeStartedAt = performance.now();
       updateActiveNodeFromViewport();
+      phaseDurations.activeMs = Math.round(performance.now() - activeStartedAt);
+      const renderStartedAt = performance.now();
       renderTree();
+      phaseDurations.renderMs = Math.round(performance.now() - renderStartedAt);
+    } catch (error) {
+      logger?.error("scan-error", error);
+      console.warn("ChatGPT Tree Panel: scan failed", error);
     } finally {
+      const durationMs = Math.round(performance.now() - scanStartedAt);
+      const logMethod = durationMs > 800 ? "warn" : "debug";
+      logger?.[logMethod]?.("scan-finish", {
+        durationMs,
+        entriesCount,
+        skippedUnchanged,
+        forceRender: Boolean(forceRender),
+        forceRefresh: Boolean(forceRefresh),
+        nodeCount: Math.max(0, Object.keys(state.tree?.nodes || {}).length - 1),
+        phaseDurations
+      });
       state.scanInFlight = false;
       updateBusyControls();
       flushDeferredScan();
     }
   }
 
-  function extractPromptEntries() {
+  function extractPromptEntries(phaseDurations) {
+    const turnsStartedAt = performance.now();
     const turns = getConversationTurns();
+    if (phaseDurations) {
+      phaseDurations.turnsMs = Math.round(performance.now() - turnsStartedAt);
+      phaseDurations.turnCount = turns.length;
+    }
     if (hardAlgorithm?.extractPromptEntries) {
-      return hardAlgorithm.extractPromptEntries(turns).map((entry, index) => ({
+      const algorithmStartedAt = performance.now();
+      const entries = hardAlgorithm.extractPromptEntries(turns).map((entry, index) => ({
         ...entry,
         originalPromptIndex: Number.isFinite(entry?.originalPromptIndex) ? entry.originalPromptIndex : index
       }));
+      if (phaseDurations) {
+        phaseDurations.algorithmMs = Math.round(performance.now() - algorithmStartedAt);
+      }
+      return entries;
     }
     return [];
   }
@@ -1596,35 +1795,23 @@
   }
 
   function getGenericTurnText(turn) {
-    const clone = turn.cloneNode(true);
-    clone.querySelectorAll([
-      "button",
-      "nav",
-      "textarea",
-      "input",
-      "svg",
-      "img",
-      "video",
-      "canvas",
-      "style",
-      "script",
-      "footer",
-      '[role="toolbar"]',
-      '[aria-label*="feedback" i]',
-      '[aria-label*="citation" i]',
-      '[aria-label*="source" i]',
-      '[class*="toolbar"]',
-      '[class*="action"]',
-      '[class*="feedback"]',
-      '[class*="citation"]',
-      '[class*="source"]'
-    ].join(",")).forEach((node) => node.remove());
-    const raw = normalizeBlockText(clone.innerText || clone.textContent || "");
-    return raw
+    const signature = getElementTextSignature(turn);
+    const cached = state.turnTextCache.get(turn);
+    if (cached?.signature === signature) {
+      return cached.value;
+    }
+
+    const raw = extractElementTextDeep(turn);
+    const value = raw
       .replace(/\b(ChatGPT can make mistakes\.? Check important info\.?)$/i, "")
       .replace(/\b(Gemini can make mistakes\.? Please double-check responses\.?)$/i, "")
       .replace(/\b(Previous response|Next response|Previous message|Next message)\b/gi, "")
       .trim();
+    state.turnTextCache.set(turn, {
+      signature,
+      value
+    });
+    return value;
   }
 
   function getCopilotTurnText(turn) {
@@ -1658,32 +1845,133 @@
       return fallbackText;
     }
 
-    const container = root.cloneNode(true);
-    container.querySelectorAll([
-      "button",
-      "nav",
-      "textarea",
-      "input",
-      "svg",
-      "img",
-      "video",
-      "canvas",
-      "style",
-      "script",
-      "footer",
-      '[role="toolbar"]',
-      '[aria-label*="feedback" i]',
-      '[aria-label*="citation" i]',
-      '[aria-label*="source" i]',
-      '[class*="toolbar"]',
-      '[class*="action"]',
-      '[class*="feedback"]',
-      '[class*="citation"]',
-      '[class*="source"]'
-    ].join(",")).forEach((node) => node.remove());
+    const signature = getElementTextSignature(root);
+    const cached = state.assistantMarkdownCache.get(root);
+    if (cached?.signature === signature) {
+      return cached.value;
+    }
 
-    const markdown = extractMarkdownFromNode(container).trim();
-    return markdown || fallbackText;
+    const markdown = extractAssistantMatchMarkdown(root).trim();
+    const value = markdown || fallbackText;
+    state.assistantMarkdownCache.set(root, {
+      signature,
+      value: truncateAssistantMatchText(value)
+    });
+    return truncateAssistantMatchText(value);
+  }
+
+  function extractAssistantMatchMarkdown(root) {
+    const parts = [];
+    const limit = {
+      chars: 0,
+      maxChars: ASSISTANT_MATCH_TEXT_MAX_CHARS
+    };
+    collectAssistantMatchMarkdown(root, parts, limit);
+    return normalizeBlockMarkdownText(parts.join(""));
+  }
+
+  function collectAssistantMatchMarkdown(node, parts, limit) {
+    if (!node || limit.chars >= limit.maxChars) {
+      return;
+    }
+    if (node.nodeType === Node.TEXT_NODE) {
+      appendAssistantMatchPart(parts, limit, String(node.textContent || ""));
+      return;
+    }
+    if (node.nodeType !== Node.ELEMENT_NODE && node.nodeType !== Node.DOCUMENT_FRAGMENT_NODE) {
+      return;
+    }
+
+    const element = node;
+    const tagName = String(element.tagName || "").toLowerCase();
+    if (node.nodeType === Node.ELEMENT_NODE && shouldSkipTextElement(element)) {
+      return;
+    }
+
+    if (/^h[1-6]$/.test(tagName)) {
+      appendAssistantMatchPart(parts, limit, "\n" + "#".repeat(Number(tagName.slice(1))) + " ");
+      collectAssistantChildrenMarkdown(node, parts, limit);
+      appendAssistantMatchPart(parts, limit, "\n");
+      return;
+    }
+    if (tagName === "strong" || tagName === "b") {
+      appendAssistantMatchPart(parts, limit, "**");
+      collectAssistantChildrenMarkdown(node, parts, limit);
+      appendAssistantMatchPart(parts, limit, "**");
+      return;
+    }
+    if (tagName === "li") {
+      appendAssistantMatchPart(parts, limit, "\n- ");
+      collectAssistantChildrenMarkdown(node, parts, limit);
+      appendAssistantMatchPart(parts, limit, "\n");
+      return;
+    }
+    if (tagName === "br") {
+      appendAssistantMatchPart(parts, limit, "\n");
+      return;
+    }
+    if (isBlockBoundaryElement(element)) {
+      appendAssistantMatchPart(parts, limit, "\n");
+      collectAssistantChildrenMarkdown(node, parts, limit);
+      appendAssistantMatchPart(parts, limit, "\n");
+      return;
+    }
+
+    collectAssistantChildrenMarkdown(node, parts, limit);
+  }
+
+  function collectAssistantChildrenMarkdown(node, parts, limit) {
+    if (node.nodeType === Node.ELEMENT_NODE && node.tagName && node.tagName.toLowerCase() === "slot") {
+      const assignedNodes = node.assignedNodes ? node.assignedNodes({ flatten: true }) : [];
+      if (assignedNodes.length) {
+        for (const assignedNode of assignedNodes) {
+          collectAssistantMatchMarkdown(assignedNode, parts, limit);
+          if (limit.chars >= limit.maxChars) {
+            return;
+          }
+        }
+        return;
+      }
+    }
+
+    if (node.nodeType === Node.ELEMENT_NODE && node.shadowRoot) {
+      collectAssistantMatchMarkdown(node.shadowRoot, parts, limit);
+    }
+
+    const children = node.childNodes || [];
+    for (let index = 0; index < children.length; index += 1) {
+      collectAssistantMatchMarkdown(children[index], parts, limit);
+      if (limit.chars >= limit.maxChars) {
+        return;
+      }
+    }
+  }
+
+  function appendAssistantMatchPart(parts, limit, value) {
+    if (!value || limit.chars >= limit.maxChars) {
+      return;
+    }
+    const remaining = limit.maxChars - limit.chars;
+    const text = String(value).slice(0, remaining);
+    parts.push(text);
+    limit.chars += text.length;
+  }
+
+  function truncateAssistantMatchText(text) {
+    const normalized = normalizeBlockMarkdownText(text);
+    if (normalized.length <= ASSISTANT_MATCH_TEXT_MAX_CHARS) {
+      return normalized;
+    }
+    return normalized.slice(0, ASSISTANT_MATCH_TEXT_MAX_CHARS).trim();
+  }
+
+  function getElementTextSignature(element) {
+    const text = String(element?.textContent || "");
+    return [
+      text.length,
+      text.slice(0, 96),
+      text.slice(-96)
+    ].join("|");
   }
 
   function extractMarkdownFromNode(node, context = {}) {
@@ -2727,12 +3015,13 @@
     const seenSignatures = new Set();
     const seenPromptIndices = new Set();
     const signatureNodeMap = new Map();
+    const nodeIndexes = buildNodeIndexes(state.tree);
 
     for (let index = 0; index < entries.length; index += 1) {
       const entry = entries[index];
-      const resolvedParentId = resolveParentId(parentId, entry, signatureNodeMap);
+      const resolvedParentId = resolveParentId(parentId, entry, signatureNodeMap, nodeIndexes);
       const originalPromptIndex = Number.isFinite(entry.originalPromptIndex) ? entry.originalPromptIndex : index;
-      const node = findOrCreateNode(resolvedParentId, entry, originalPromptIndex, now, signatureNodeMap);
+      const node = findOrCreateNode(resolvedParentId, entry, originalPromptIndex, now, signatureNodeMap, nodeIndexes);
       node.title = entry.title;
       node.answer = entry.answer;
       node.signature = entry.signature;
@@ -2750,6 +3039,7 @@
       }
       seenPromptIndices.add(originalPromptIndex);
       signatureNodeMap.set(entry.signature, node.id);
+      indexNode(nodeIndexes, node);
       parentId = node.id;
     }
 
@@ -2763,7 +3053,7 @@
     saveTree();
   }
 
-  function resolveParentId(parentId, entry, signatureNodeMap) {
+  function resolveParentId(parentId, entry, signatureNodeMap, nodeIndexes) {
     if (!entry.parentSignature) {
       return parentId;
     }
@@ -2772,13 +3062,16 @@
       return state.tree.rootId;
     }
 
-    const matchedParentId = signatureNodeMap.get(entry.parentSignature) || findNodeIdBySignature(entry.parentSignature);
+    const matchedParentId = signatureNodeMap.get(entry.parentSignature) || findNodeIdBySignature(entry.parentSignature, nodeIndexes);
     return matchedParentId || parentId;
   }
 
-  function findNodeIdBySignature(signature) {
+  function findNodeIdBySignature(signature, nodeIndexes) {
     if (!signature) {
       return "";
+    }
+    if (nodeIndexes?.bySignature?.has(signature)) {
+      return nodeIndexes.bySignature.get(signature);
     }
 
     const match = Object.values(state.tree.nodes).find((node) => {
@@ -2788,12 +3081,8 @@
     return match ? match.id : "";
   }
 
-  function findOrCreateNode(parentId, entry, promptIndex, timestamp, signatureNodeMap) {
-    let node = Object.values(state.tree.nodes).find((candidate) => {
-      return candidate.id !== "root" &&
-        candidate.promptIndex === promptIndex &&
-        candidate.signature === entry.signature;
-    });
+  function findOrCreateNode(parentId, entry, promptIndex, timestamp, signatureNodeMap, nodeIndexes) {
+    let node = nodeIndexes.byPromptSignature.get(getPromptSignatureKey(promptIndex, entry.signature));
 
     if (!node) {
       const siblings = getChildren(parentId);
@@ -2801,11 +3090,7 @@
     }
 
     if (!node) {
-      node = Object.values(state.tree.nodes).find((candidate) => {
-        return candidate.id !== "root" &&
-          candidate.parentId === parentId &&
-          candidate.signature === entry.signature;
-      });
+      node = nodeIndexes.byParentSignature.get(getParentSignatureKey(parentId, entry.signature));
     }
 
     if (!node) {
@@ -2829,6 +3114,41 @@
 
     node.parentId = resolveStoredParentId(node, parentId, signatureNodeMap);
     return node;
+  }
+
+  function buildNodeIndexes(tree) {
+    const indexes = {
+      byPromptSignature: new Map(),
+      byParentSignature: new Map(),
+      bySignature: new Map()
+    };
+    for (const node of Object.values(tree?.nodes || {})) {
+      indexNode(indexes, node);
+    }
+    return indexes;
+  }
+
+  function indexNode(indexes, node) {
+    if (!indexes || !node || node.id === state.tree.rootId) {
+      return;
+    }
+    if (Number.isInteger(node.promptIndex) && node.signature) {
+      indexes.byPromptSignature.set(getPromptSignatureKey(node.promptIndex, node.signature), node);
+    }
+    if (node.parentId && node.signature) {
+      indexes.byParentSignature.set(getParentSignatureKey(node.parentId, node.signature), node);
+    }
+    if (node.signature && !indexes.bySignature.has(node.signature)) {
+      indexes.bySignature.set(node.signature, node.id);
+    }
+  }
+
+  function getPromptSignatureKey(promptIndex, signature) {
+    return String(promptIndex) + "\n" + String(signature || "");
+  }
+
+  function getParentSignatureKey(parentId, signature) {
+    return String(parentId || "") + "\n" + String(signature || "");
   }
 
   function resolveStoredParentId(node, fallbackParentId, signatureNodeMap) {
@@ -3038,6 +3358,7 @@
     if (!state.body) {
       return;
     }
+    const renderStartedAt = performance.now();
 
     if (isConversationClosed()) {
       state.renderedFingerprint = "";
@@ -3096,6 +3417,15 @@
     state.body.scrollLeft = previousScrollLeft;
     state.body.scrollTop = previousScrollTop;
     syncRenderedActiveNodeClasses();
+    const durationMs = Math.round(performance.now() - renderStartedAt);
+    if (durationMs > 120) {
+      logger?.warn("render-slow", {
+        durationMs,
+        visibleCount: layout.length,
+        width,
+        height
+      });
+    }
     window.requestAnimationFrame(() => {
       scrollTreeNodeIntoView(state.activeNodeId);
     });
@@ -4467,7 +4797,14 @@
   }
 
   function detectTopOverlayHeight() {
-    const elements = document.body ? Array.from(document.body.querySelectorAll("*")) : [];
+    const cache = state.topOverlayCache;
+    const now = performance.now();
+    if (cache.measuredAt > 0 && cache.viewportWidth === window.innerWidth && now - cache.measuredAt < TOP_OVERLAY_CACHE_TTL_MS) {
+      return cache.value;
+    }
+
+    const startedAt = performance.now();
+    const elements = getTopOverlayCandidates();
     let maxBottom = 0;
     const minWidth = state.siteType === SITE_TYPE_GITHUB_COPILOT
       ? Math.min(window.innerWidth * 0.12, 96)
@@ -4497,7 +4834,79 @@
       maxBottom = Math.max(maxBottom, rect.bottom);
     }
 
-    return Math.max(0, Math.ceil(maxBottom));
+    const value = Math.max(0, Math.ceil(maxBottom));
+    state.topOverlayCache = {
+      value,
+      measuredAt: now,
+      viewportWidth: window.innerWidth
+    };
+    const durationMs = Math.round(performance.now() - startedAt);
+    if (durationMs > 60) {
+      logger?.warn("top-overlay-detect-slow", {
+        durationMs,
+        candidateCount: elements.length,
+        value
+      });
+    }
+    return value;
+  }
+
+  function resetTopOverlayCache() {
+    state.topOverlayCache.value = 0;
+    state.topOverlayCache.measuredAt = 0;
+    state.topOverlayCache.viewportWidth = 0;
+  }
+
+  function getTopOverlayCandidates() {
+    if (!document.body) {
+      return [];
+    }
+
+    const candidates = [];
+    const seen = new Set();
+    const addCandidate = (element) => {
+      if (!element || seen.has(element) || candidates.length >= 240) {
+        return;
+      }
+      seen.add(element);
+      candidates.push(element);
+    };
+
+    const bodyChildren = document.body.children;
+    for (let i = 0; i < bodyChildren.length && i < 120; i += 1) {
+      addCandidate(bodyChildren[i]);
+    }
+
+    if (typeof document.elementsFromPoint === "function") {
+      const width = Math.max(1, window.innerWidth || 1);
+      const height = Math.max(1, window.innerHeight || 1);
+      const sampleXs = [
+        1,
+        Math.floor(width * 0.25),
+        Math.floor(width * 0.5),
+        Math.floor(width * 0.75),
+        Math.max(1, width - 2)
+      ];
+      const sampleYs = [
+        1,
+        Math.min(16, height - 1),
+        Math.min(56, height - 1)
+      ];
+      for (const x of sampleXs) {
+        for (const y of sampleYs) {
+          const stack = document.elementsFromPoint(x, y).slice(0, 8);
+          for (const element of stack) {
+            let current = element;
+            while (current && current !== document.body && current !== document.documentElement) {
+              addCandidate(current);
+              current = current.parentElement;
+            }
+          }
+        }
+      }
+    }
+
+    return candidates;
   }
 
   function alignWindowScrollForTarget(target, safeTopOffset, behavior) {
@@ -4642,6 +5051,17 @@
       return null;
     }
 
+    const nodeCount = Math.max(0, Object.keys(state.tree.nodes || {}).length - 1);
+    if (nodeCount > 80) {
+      logger?.warn("resolve-target-skip-heavy-fallback", {
+        nodeId,
+        nodeCount,
+        promptIndex: node.promptIndex,
+        title: String(node.title || "").slice(0, 120)
+      });
+      return null;
+    }
+
     const userTurns = getConversationTurns().filter((turn) => turn.role === "user" && turn.promptEl?.isConnected);
     let target = null;
 
@@ -4682,6 +5102,7 @@
   }
 
   function jumpToNode(nodeId) {
+    const startedAt = performance.now();
     debugLog("jump-start", {
       nodeId,
       activeNodeId: state.activeNodeId
@@ -4702,6 +5123,7 @@
       debugLog("jump-no-target", {
         nodeId
       });
+      logSlowJumpIfNeeded(startedAt, nodeId, "no-target");
       window.requestAnimationFrame(() => {
         scrollTreeNodeIntoView(nodeId, { alignX: "start" });
       });
@@ -4715,6 +5137,21 @@
     window.requestAnimationFrame(() => {
       scrollTargetIntoView(target);
       scrollTreeNodeIntoView(nodeId, { alignX: "start" });
+    });
+    logSlowJumpIfNeeded(startedAt, nodeId, "target-found");
+  }
+
+  function logSlowJumpIfNeeded(startedAt, nodeId, result) {
+    const durationMs = Math.round(performance.now() - startedAt);
+    if (durationMs <= 80) {
+      return;
+    }
+    logger?.warn("jump-sync-slow", {
+      durationMs,
+      nodeId,
+      result,
+      nodeCount: Math.max(0, Object.keys(state.tree?.nodes || {}).length - 1),
+      domMapSize: state.domNodeMap.size
     });
   }
 
@@ -5112,15 +5549,29 @@
   }
 
   function applyActiveHighlight() {
-    queryAllDeep("[" + CURRENT_ATTR + "]").forEach((element) => {
-      element.removeAttribute(CURRENT_ATTR);
-    });
-    if (!state.activeNodeId) {
+    const target = state.activeNodeId ? state.domNodeMap.get(state.activeNodeId) : null;
+    if (activeHighlightMarker) {
+      activeHighlightMarker.mark(target || null);
       return;
     }
-    const target = state.domNodeMap.get(state.activeNodeId);
+
+    if (state.highlightedPromptEl && state.highlightedPromptEl !== target) {
+      state.highlightedPromptEl.removeAttribute(CURRENT_ATTR);
+    }
+    state.highlightedPromptEl = target || null;
     if (target) {
       target.setAttribute(CURRENT_ATTR, "true");
+    }
+  }
+
+  function clearActiveHighlight() {
+    if (activeHighlightMarker) {
+      activeHighlightMarker.clear();
+      return;
+    }
+    if (state.highlightedPromptEl) {
+      state.highlightedPromptEl.removeAttribute(CURRENT_ATTR);
+      state.highlightedPromptEl = null;
     }
   }
 

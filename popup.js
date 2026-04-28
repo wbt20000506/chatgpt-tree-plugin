@@ -6,6 +6,7 @@
   const messageEl = document.getElementById("status-message");
   const enableButton = document.getElementById("enable-button");
   const refreshButton = document.getElementById("refresh-button");
+  const copyDebugLogButton = document.getElementById("copy-debug-log-button");
   const SUPPORTED_TAB_RE = /^https:\/\/(chatgpt\.com|gemini\.google\.com)\//i;
 
   enableButton.addEventListener("click", async () => {
@@ -14,6 +15,10 @@
 
   refreshButton.addEventListener("click", async () => {
     await runWithButtonFeedback(refreshButton, "重新检测中...", () => updateStatus());
+  });
+
+  copyDebugLogButton.addEventListener("click", async () => {
+    await runWithButtonFeedback(copyDebugLogButton, "复制中...", copyDebugLog);
   });
 
   await updateStatus();
@@ -114,6 +119,78 @@
     }
   }
 
+  async function copyDebugLog() {
+    const tab = await getCurrentTab();
+    if (!tab?.id || !SUPPORTED_TAB_RE.test(tab.url || "")) {
+      await copyText(buildPopupDebugText({
+        reason: "unsupported_tab",
+        tabUrl: tab?.url || "",
+        title: tab?.title || ""
+      }));
+      messageEl.textContent = "当前不是支持的对话页面，已复制弹窗诊断信息。";
+      return;
+    }
+
+    let response = await requestDebugLog(tab.id);
+    if (!response?.ok) {
+      const injected = await ensureContentScriptInjected(tab.id);
+      if (injected) {
+        response = await requestDebugLog(tab.id);
+      }
+    }
+
+    const text = response?.text || buildPopupDebugText({
+      reason: "content_script_unavailable",
+      tabUrl: tab.url || "",
+      title: tab.title || ""
+    });
+    await copyText(text);
+    messageEl.textContent = response?.ok
+      ? "脱敏调试日志已复制，可以直接粘贴给开发者排查。"
+      : "页面脚本未响应，已复制弹窗诊断信息。";
+  }
+
+  async function requestDebugLog(tabId) {
+    try {
+      return await chrome.tabs.sendMessage(tabId, {
+        type: "cgpt-tree-get-debug-log"
+      });
+    } catch (error) {
+      return {
+        ok: false,
+        error: String(error?.message || error)
+      };
+    }
+  }
+
+  async function copyText(text) {
+    const value = String(text || "");
+    if (navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(value);
+      return;
+    }
+    const textarea = document.createElement("textarea");
+    textarea.value = value;
+    textarea.setAttribute("readonly", "");
+    textarea.style.position = "fixed";
+    textarea.style.left = "-9999px";
+    document.body.appendChild(textarea);
+    textarea.select();
+    document.execCommand("copy");
+    textarea.remove();
+  }
+
+  function buildPopupDebugText(details) {
+    return [
+      "AI Conversation Tree Popup Debug",
+      "Generated: " + new Date().toISOString(),
+      JSON.stringify({
+        details,
+        userAgent: navigator.userAgent || ""
+      }, null, 2)
+    ].join("\n");
+  }
+
   async function ensureContentScriptInjected(tabId) {
     if (!chrome.scripting?.executeScript || !chrome.scripting?.insertCSS) {
       return false;
@@ -130,7 +207,7 @@
     try {
       await chrome.scripting.executeScript({
         target: { tabId },
-        files: ["hard-algorithm.js", "content.js"]
+        files: ["content-core.js", "hard-algorithm.js", "content.js"]
       });
       return true;
     } catch (error) {

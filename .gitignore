@@ -4,3 +4,4 @@ output/
 test-results/
 playwright-report/
 scripts/
+dist/
