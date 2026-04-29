@@ -7,7 +7,11 @@
   const enableButton = document.getElementById("enable-button");
   const refreshButton = document.getElementById("refresh-button");
   const copyDebugLogButton = document.getElementById("copy-debug-log-button");
+  const themeButtons = Array.from(document.querySelectorAll("[data-theme-value]"));
   const SUPPORTED_TAB_RE = /^https:\/\/(chatgpt\.com|gemini\.google\.com)\//i;
+  const THEME_STORAGE_KEY = "cgpt_tree_theme_preference_v1";
+  const contentCore = globalThis.CGPTTreeContentCore || null;
+  const themeMediaQuery = getThemeMediaQuery();
 
   enableButton.addEventListener("click", async () => {
     await runWithButtonFeedback(enableButton, "开启中...", () => updateStatus("open"));
@@ -21,6 +25,19 @@
     await runWithButtonFeedback(copyDebugLogButton, "复制中...", copyDebugLog);
   });
 
+  themeButtons.forEach((button) => {
+    button.addEventListener("click", async () => {
+      await setThemePreference(button.getAttribute("data-theme-value"));
+    });
+  });
+
+  if (themeMediaQuery?.addEventListener) {
+    themeMediaQuery.addEventListener("change", handleSystemThemeChange);
+  } else if (themeMediaQuery?.addListener) {
+    themeMediaQuery.addListener(handleSystemThemeChange);
+  }
+
+  await loadThemePreference();
   await updateStatus();
 
   async function updateStatus(mode) {
@@ -98,6 +115,119 @@
     badgeEl.classList.toggle("is-open", !options.closed);
     messageEl.textContent = options.message;
     enableButton.hidden = !options.enable;
+  }
+
+  async function loadThemePreference() {
+    const preference = normalizeThemePreference(await readStoredThemePreference());
+    updateThemeButtons(preference);
+  }
+
+  async function setThemePreference(preference) {
+    const normalizedPreference = normalizeThemePreference(preference);
+    updateThemeButtons(normalizedPreference);
+    await writeStoredThemePreference(normalizedPreference);
+    await notifyCurrentTabThemeChanged(normalizedPreference);
+  }
+
+  async function readStoredThemePreference() {
+    const storageArea = globalThis.chrome?.storage?.local;
+    if (storageArea?.get) {
+      try {
+        const result = await storageArea.get(THEME_STORAGE_KEY);
+        return result?.[THEME_STORAGE_KEY];
+      } catch (error) {
+        console.warn("ChatGPT Tree Panel: failed to read theme preference", error);
+      }
+    }
+    try {
+      return localStorage.getItem(THEME_STORAGE_KEY);
+    } catch (error) {
+      return "system";
+    }
+  }
+
+  async function writeStoredThemePreference(preference) {
+    const storageArea = globalThis.chrome?.storage?.local;
+    if (storageArea?.set) {
+      await storageArea.set({
+        [THEME_STORAGE_KEY]: normalizeThemePreference(preference)
+      });
+      return;
+    }
+    try {
+      localStorage.setItem(THEME_STORAGE_KEY, normalizeThemePreference(preference));
+    } catch (error) {
+      console.warn("ChatGPT Tree Panel: failed to write theme preference", error);
+    }
+  }
+
+  async function notifyCurrentTabThemeChanged(preference) {
+    const tab = await getCurrentTab();
+    if (!tab?.id || !SUPPORTED_TAB_RE.test(tab.url || "")) {
+      return;
+    }
+    try {
+      await chrome.tabs.sendMessage(tab.id, {
+        type: "cgpt-tree-theme-preference-changed",
+        preference: normalizeThemePreference(preference)
+      });
+    } catch (error) {
+      // The storage update is enough for the next page load; this message is only for instant refresh.
+    }
+  }
+
+  function updateThemeButtons(preference) {
+    const normalizedPreference = normalizeThemePreference(preference);
+    const resolvedTheme = resolveThemeName(normalizedPreference, systemPrefersDark());
+    document.body.setAttribute("data-theme-preference", normalizedPreference);
+    document.body.setAttribute("data-theme", resolvedTheme);
+    themeButtons.forEach((button) => {
+      const selected = button.getAttribute("data-theme-value") === normalizedPreference;
+      button.classList.toggle("is-selected", selected);
+      button.setAttribute("aria-pressed", selected ? "true" : "false");
+    });
+  }
+
+  function handleSystemThemeChange() {
+    if (document.body.getAttribute("data-theme-preference") === "system") {
+      updateThemeButtons("system");
+    }
+  }
+
+  function normalizeThemePreference(value) {
+    if (contentCore?.normalizeThemePreference) {
+      return contentCore.normalizeThemePreference(value);
+    }
+    const normalized = String(value || "system").trim().toLowerCase();
+    return normalized === "light" || normalized === "dark" || normalized === "system"
+      ? normalized
+      : "system";
+  }
+
+  function resolveThemeName(preference, prefersDark) {
+    if (contentCore?.resolveThemeName) {
+      return contentCore.resolveThemeName(preference, prefersDark);
+    }
+    const normalizedPreference = normalizeThemePreference(preference);
+    if (normalizedPreference === "light" || normalizedPreference === "dark") {
+      return normalizedPreference;
+    }
+    return prefersDark ? "dark" : "light";
+  }
+
+  function getThemeMediaQuery() {
+    if (typeof window.matchMedia !== "function") {
+      return null;
+    }
+    try {
+      return window.matchMedia("(prefers-color-scheme: dark)");
+    } catch (error) {
+      return null;
+    }
+  }
+
+  function systemPrefersDark() {
+    return Boolean(themeMediaQuery?.matches);
   }
 
   async function getCurrentTab() {

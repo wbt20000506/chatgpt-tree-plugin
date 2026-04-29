@@ -224,6 +224,7 @@
     state.lastSavedTreeFingerprint = getPersistedTreeFingerprint(state.tree);
     state.themePreference = loadThemePreference();
     state.resolvedTheme = resolveThemeName(state.themePreference, systemPrefersDark());
+    void syncStoredThemePreference();
     logger?.info("boot", {
       href: location.href,
       siteType: state.siteType,
@@ -522,11 +523,6 @@
         '  <div class="cgpt-tree-header-top" data-role="panel-drag-handle">',
         '    <div class="cgpt-tree-title">',
         '      <div class="cgpt-tree-title-line"><strong>对话树</strong><span class="cgpt-tree-drag-hint">可拖动</span></div>',
-        '      <div class="cgpt-tree-theme-switch" data-role="theme-switch" role="group" aria-label="主题模式">',
-        '        <button type="button" data-role="theme-option" data-theme-value="system" title="跟随浏览器或系统主题">系统</button>',
-        '        <button type="button" data-role="theme-option" data-theme-value="light" title="使用浅色主题">浅色</button>',
-        '        <button type="button" data-role="theme-option" data-theme-value="dark" title="使用暗色主题">暗色</button>',
-        "      </div>",
         "    </div>",
         '    <div class="cgpt-tree-header-corner-actions">',
         '      <button type="button" class="cgpt-tree-toggle-button" data-role="toggle-close-menu">关闭</button>',
@@ -633,12 +629,6 @@
     if (dragHandle) {
       dragHandle.addEventListener("pointerdown", beginPanelDrag);
     }
-
-    state.panel.querySelectorAll('[data-role="theme-option"]').forEach((button) => {
-      button.addEventListener("click", () => {
-        setThemePreference(button.getAttribute("data-theme-value"));
-      });
-    });
 
     bindClick("toggle", () => {
       state.tree.panelCollapsed = !state.tree.panelCollapsed;
@@ -845,17 +835,49 @@
     }
   }
 
-  function saveThemePreference(preference) {
+  async function syncStoredThemePreference() {
+    const storageArea = globalThis.chrome?.storage?.local;
+    if (!storageArea?.get) {
+      return;
+    }
     try {
-      window.localStorage.setItem(THEME_STORAGE_KEY, normalizeThemePreference(preference));
+      const result = await storageArea.get(THEME_STORAGE_KEY);
+      const storedPreference = result?.[THEME_STORAGE_KEY];
+      if (storedPreference) {
+        setThemePreference(storedPreference, { persist: false });
+        return;
+      }
+      if (state.themePreference !== "system") {
+        await storageArea.set({
+          [THEME_STORAGE_KEY]: state.themePreference
+        });
+      }
     } catch (error) {
-      logger?.warn("theme-save-failed", error);
+      logger?.warn("theme-sync-failed", error);
     }
   }
 
-  function setThemePreference(preference) {
+  function saveThemePreference(preference) {
+    const normalizedPreference = normalizeThemePreference(preference);
+    try {
+      window.localStorage.setItem(THEME_STORAGE_KEY, normalizedPreference);
+    } catch (error) {
+      logger?.warn("theme-save-failed", error);
+    }
+    if (globalThis.chrome?.storage?.local?.set) {
+      globalThis.chrome.storage.local.set({
+        [THEME_STORAGE_KEY]: normalizedPreference
+      }).catch((error) => {
+        logger?.warn("theme-storage-save-failed", error);
+      });
+    }
+  }
+
+  function setThemePreference(preference, options = {}) {
     state.themePreference = normalizeThemePreference(preference);
-    saveThemePreference(state.themePreference);
+    if (options.persist !== false) {
+      saveThemePreference(state.themePreference);
+    }
     applyThemeState();
   }
 
@@ -867,11 +889,6 @@
     }
     state.panel.setAttribute("data-theme", state.resolvedTheme);
     state.panel.setAttribute("data-theme-preference", state.themePreference);
-    state.panel.querySelectorAll('[data-role="theme-option"]').forEach((button) => {
-      const selected = button.getAttribute("data-theme-value") === state.themePreference;
-      button.classList.toggle("is-selected", selected);
-      button.setAttribute("aria-pressed", selected ? "true" : "false");
-    });
   }
 
   function normalizeThemePreference(value) {
@@ -952,6 +969,12 @@
         applyThemeState();
       }
     };
+    const handleThemeStorageChange = (changes, areaName) => {
+      if (areaName !== "local" || !changes?.[THEME_STORAGE_KEY]) {
+        return;
+      }
+      setThemePreference(changes[THEME_STORAGE_KEY].newValue, { persist: false });
+    };
 
     window.addEventListener("scroll", scheduleActiveViewportUpdate, { passive: true });
     addCleanup(() => window.removeEventListener("scroll", scheduleActiveViewportUpdate, { passive: true }));
@@ -980,6 +1003,11 @@
       addCleanup(() => themeMediaQuery.removeListener(handleSystemThemeChange));
     }
 
+    if (globalThis.chrome?.storage?.onChanged?.addListener) {
+      globalThis.chrome.storage.onChanged.addListener(handleThemeStorageChange);
+      addCleanup(() => globalThis.chrome.storage.onChanged.removeListener(handleThemeStorageChange));
+    }
+
     state.urlTimer = window.setInterval(() => {
       if (location.href === state.lastKnownUrl) {
         return;
@@ -990,7 +1018,8 @@
   }
 
   function bindRuntimeMessages() {
-    if (!chrome?.runtime?.onMessage) {
+    const runtime = globalThis.chrome?.runtime;
+    if (!runtime?.onMessage) {
       return;
     }
     const listener = (message, sender, sendResponse) => {
@@ -1015,6 +1044,15 @@
         });
         return false;
       }
+      if (message?.type === "cgpt-tree-theme-preference-changed") {
+        setThemePreference(message.preference, { persist: false });
+        sendResponse({
+          ok: true,
+          preference: state.themePreference,
+          resolvedTheme: state.resolvedTheme
+        });
+        return false;
+      }
       if (message?.type === "cgpt-tree-set-conversation-status") {
         void setConversationClosedMode(message.mode || "open")
           .then(() => getConversationStatusPayload())
@@ -1023,8 +1061,8 @@
       }
       return false;
     };
-    chrome.runtime.onMessage.addListener(listener);
-    addCleanup(() => chrome.runtime.onMessage.removeListener(listener));
+    runtime.onMessage.addListener(listener);
+    addCleanup(() => runtime.onMessage.removeListener(listener));
   }
 
   function getDebugLogText() {

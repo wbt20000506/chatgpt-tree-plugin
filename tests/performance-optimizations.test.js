@@ -191,6 +191,18 @@ function testThemePreferenceHelpers() {
   assert.equal(contentCore.resolveThemeName("bad-value", true), "dark");
 }
 
+function testThemeControlLivesInPopupOnly() {
+  const contentScript = fs.readFileSync(path.join(__dirname, "..", "content.js"), "utf8");
+  const popupHtml = fs.readFileSync(path.join(__dirname, "..", "popup.html"), "utf8");
+  const popupScript = fs.readFileSync(path.join(__dirname, "..", "popup.js"), "utf8");
+
+  assert.doesNotMatch(contentScript, /data-role="theme-option"/);
+  assert.match(popupHtml, /id="theme-system"/);
+  assert.match(popupHtml, /id="theme-light"/);
+  assert.match(popupHtml, /id="theme-dark"/);
+  assert.match(popupScript, /cgpt_tree_theme_preference_v1/);
+}
+
 function testClickPathAvoidsKnownFullDomScans() {
   const contentScript = fs.readFileSync(path.join(__dirname, "..", "content.js"), "utf8");
 
@@ -309,6 +321,7 @@ testDebugLoggerExport();
 testDebugLoggerRedactedExport();
 testSingleAttributeMarkerClearsOnlyPreviousElement();
 testThemePreferenceHelpers();
+testThemeControlLivesInPopupOnly();
 testClickPathAvoidsKnownFullDomScans();
 testLongPlainAnswerUsesBoundedMatchText();
 testScanExtractionAvoidsFullDomClone();

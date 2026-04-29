@@ -18,6 +18,17 @@
           <span class="popup-status-label">状态</span>
           <div class="popup-status" id="status-badge">读取中</div>
         </div>
+        <div class="popup-theme-row" aria-labelledby="theme-title">
+          <div>
+            <div class="popup-status-label" id="theme-title">主题</div>
+            <p class="popup-theme-hint">控制页面里的对话树面板颜色</p>
+          </div>
+          <div class="popup-theme-switch" role="group" aria-label="主题模式">
+            <button type="button" id="theme-system" data-theme-value="system" aria-pressed="false">系统</button>
+            <button type="button" id="theme-light" data-theme-value="light" aria-pressed="false">浅色</button>
+            <button type="button" id="theme-dark" data-theme-value="dark" aria-pressed="false">深色</button>
+          </div>
+        </div>
         <div class="popup-message-card">
           <p class="popup-message" id="status-message">正在检查这个对话是否被关闭。</p>
         </div>
@@ -32,6 +43,7 @@
         <p>如果你在面板里把某个对话关闭了，可以在这里查看状态，并重新开启。调试日志会默认脱敏，不包含对话正文。</p>
       </section>
     </main>
+    <script src="content-core.js"></script>
     <script src="popup.js"></script>
   </body>
 </html>
