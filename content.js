@@ -27,6 +27,7 @@
   const SCROLL_CORRECTION_DELAY_MS = 180;
   const SCROLL_CORRECTION_MAX_ATTEMPTS = 2;
   const MANUAL_ACTIVE_NODE_HOLD_MS = 1600;
+  const RESPONSIVE_DOCK_MAX_WIDTH = 1280;
   const SITE_TYPE_CHATGPT = "chatgpt";
   const SITE_TYPE_GEMINI = "gemini";
   const SITE_TYPE_GITHUB_COPILOT = "github-copilot";
@@ -4248,22 +4249,37 @@
     }
   }
 
+  function shouldUseResponsivePanelDock() {
+    return window.innerWidth <= RESPONSIVE_DOCK_MAX_WIDTH;
+  }
+
+  function clearPanelPositionStyles() {
+    if (!state.panel) {
+      return;
+    }
+    state.panel.style.left = "";
+    state.panel.style.top = "";
+    state.panel.style.right = "";
+    state.panel.style.bottom = "";
+  }
+
   function applyStoredPanelPosition() {
     if (!state.panel) {
       return;
     }
     const position = normalizePanelPosition(state.tree.panelPosition);
-    if (!position) {
-      state.panel.style.left = "";
-      state.panel.style.top = "";
-      state.panel.style.right = "";
-      state.panel.style.bottom = "";
+    if (!position || shouldUseResponsivePanelDock()) {
+      clearPanelPositionStyles();
       return;
     }
     applyPanelPosition(position.left, position.top, false);
   }
 
   function clampStoredPanelPosition() {
+    if (shouldUseResponsivePanelDock()) {
+      clearPanelPositionStyles();
+      return;
+    }
     const position = normalizePanelPosition(state.tree.panelPosition);
     if (!position) {
       return;

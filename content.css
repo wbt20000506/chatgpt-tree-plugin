@@ -31,7 +31,7 @@
   position: fixed;
   top: 84px;
   right: 18px;
-  width: var(--cgpt-tree-width);
+  width: min(var(--cgpt-tree-width), calc(100vw - 24px));
   max-height: calc(100vh - 108px);
   z-index: 2147483640;
   display: flex;
@@ -714,13 +714,21 @@
   background: var(--cgpt-tree-accent-soft);
 }
 
-@media (max-width: 960px) {
+@media (max-width: 1280px) {
   #cgpt-tree-panel {
+    --cgpt-tree-width: 336px;
     top: auto;
     bottom: 12px;
     right: 12px;
-    width: min(calc(100vw - 24px), 360px);
-    max-height: 60vh;
+    width: min(calc(100vw - 24px), var(--cgpt-tree-width));
+    max-height: min(58vh, calc(100vh - 24px));
+  }
+
+  .cgpt-tree-header,
+  .cgpt-tree-toolbar,
+  .cgpt-tree-status {
+    padding-left: 12px;
+    padding-right: 12px;
   }
 
   .cgpt-tree-toolbar {
@@ -740,5 +748,27 @@
   .cgpt-tree-toolbar button,
   #cgpt-tree-panel button {
     padding: 8px 9px;
+  }
+}
+
+@media (max-width: 640px) {
+  #cgpt-tree-panel {
+    --cgpt-tree-width: 100vw;
+    left: 12px;
+  }
+
+  .cgpt-tree-header-top,
+  .cgpt-tree-status {
+    align-items: flex-start;
+  }
+
+  .cgpt-tree-header-top {
+    flex-direction: column;
+  }
+
+  .cgpt-tree-header-corner-actions,
+  .cgpt-tree-status-actions {
+    width: 100%;
+    flex-wrap: wrap;
   }
 }

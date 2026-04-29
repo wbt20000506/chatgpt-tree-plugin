@@ -203,6 +203,18 @@ function testThemeControlLivesInPopupOnly() {
   assert.match(popupScript, /cgpt_tree_theme_preference_v1/);
 }
 
+function testPanelUsesCompactDockOnSmallScreens() {
+  const contentScript = fs.readFileSync(path.join(__dirname, "..", "content.js"), "utf8");
+  const contentCss = fs.readFileSync(path.join(__dirname, "..", "content.css"), "utf8");
+
+  assert.match(contentScript, /RESPONSIVE_DOCK_MAX_WIDTH\s*=\s*1280/);
+  assert.match(contentScript, /shouldUseResponsivePanelDock/);
+  assert.match(contentScript, /clearPanelPositionStyles/);
+  assert.match(contentCss, /@media\s*\(max-width:\s*1280px\)/);
+  assert.match(contentCss, /--cgpt-tree-width:\s*336px/);
+  assert.match(contentCss, /max-height:\s*min\(58vh,\s*calc\(100vh - 24px\)\)/);
+}
+
 function testClickPathAvoidsKnownFullDomScans() {
   const contentScript = fs.readFileSync(path.join(__dirname, "..", "content.js"), "utf8");
 
@@ -322,6 +334,7 @@ testDebugLoggerRedactedExport();
 testSingleAttributeMarkerClearsOnlyPreviousElement();
 testThemePreferenceHelpers();
 testThemeControlLivesInPopupOnly();
+testPanelUsesCompactDockOnSmallScreens();
 testClickPathAvoidsKnownFullDomScans();
 testLongPlainAnswerUsesBoundedMatchText();
 testScanExtractionAvoidsFullDomClone();
